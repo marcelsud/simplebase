@@ -17,6 +17,7 @@ async function run(cmd: string[], cwd: string): Promise<string> {
 test("the npm tarball installs, imports, and typechecks in an independent application", async () => {
   const directory = await mkdtemp(join(tmpdir(), "simplebase-package-"));
   try {
+    const project = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { name: string; version: string };
     const packed = JSON.parse(await run(["npm", "pack", "--json", "--pack-destination", directory], root)) as {
       filename: string;
       files: { path: string }[];
@@ -31,16 +32,15 @@ test("the npm tarball installs, imports, and typechecks in an independent applic
     await mkdir(consumer);
     await writeFile(join(consumer, "package.json"), JSON.stringify({
       name: "simplebase-consumer", private: true, type: "module",
-      dependencies: { simplebase: "file:" + join(directory, packed[0].filename) },
+      dependencies: { [project.name]: "file:" + join(directory, packed[0].filename) },
     }));
     await run([process.execPath, "install", "--ignore-scripts"], consumer);
-    const manifest = JSON.parse(await readFile(join(consumer, "node_modules/simplebase/package.json"), "utf8")) as { name: string; version: string };
-    const project = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { name: string; version: string };
+    const manifest = JSON.parse(await readFile(join(consumer, "node_modules", project.name, "package.json"), "utf8")) as { name: string; version: string };
     expect(manifest.name).toBe(project.name);
     expect(manifest.version).toBe(project.version);
 
     await writeFile(join(consumer, "main.ts"), `
-import { createSimplebase, type Simplebase, type HandlerContext } from "simplebase";
+import { createSimplebase, type Simplebase, type HandlerContext } from ${JSON.stringify(project.name)};
 
 async function check(): Promise<void> {
   const runtime: Simplebase = await createSimplebase({ storage: { engine: "postgres", url: "" } });
@@ -62,7 +62,7 @@ void check;
       "--module", "ESNext", "--moduleResolution", "Bundler", "main.ts",
     ], consumer);
     const imported = await run([process.execPath, "--eval", `
-      import { createSimplebase } from "simplebase";
+      import { createSimplebase } from ${JSON.stringify(project.name)};
       try { await createSimplebase({ storage: { engine: "postgres", url: "" } }); }
       catch (error) {
         if (!(error instanceof Error) || !error.message.includes("requires a URL")) throw error;

@@ -1,5 +1,5 @@
 {
-  "name": "simplebase",
+  "name": "@marcelsud/simplebase",
   "version": "0.1.0",
   "description": "Composable backend primitives for Bun and PostgreSQL.",
   "type": "module",

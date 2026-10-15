@@ -1,4 +1,4 @@
-import type { Simplebase, Infer } from "simplebase";
+import type { Simplebase, Infer } from "@marcelsud/simplebase";
 
 function checkContract(runtime: Simplebase): void {
   const { action, subscription, worker, v, start, stop } = runtime;

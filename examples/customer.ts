@@ -1,4 +1,4 @@
-import { createSimplebase } from "simplebase";
+import { createSimplebase } from "@marcelsud/simplebase";
 
 const simplebase = await createSimplebase({
   storage: {

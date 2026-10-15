@@ -9,11 +9,11 @@ Wave one provides validated, callable actions; local subscriptions; durable queu
 Install with either package manager:
 
 ```bash
-bun add simplebase
+bun add @marcelsud/simplebase
 ```
 
 ```bash
-npm install simplebase
+npm install @marcelsud/simplebase
 ```
 
 The package provides JavaScript modules and TypeScript declarations. Run your application with Bun and provide a PostgreSQL connection URL.
@@ -48,7 +48,7 @@ Database data remains in the Docker volume.
 Set `DATABASE_URL`, import the factory from the package root, and use its bound functions. The example checkout loads its local URL from `.env`:
 
 ```ts
-import { createSimplebase } from "simplebase";
+import { createSimplebase } from "@marcelsud/simplebase";
 
 const simplebase = await createSimplebase({
   storage: { engine: "postgres", url: process.env.DATABASE_URL! },

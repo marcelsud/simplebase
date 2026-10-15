@@ -1,5 +1,5 @@
 import { Pool, type QueryResultRow } from "pg";
-import { createSimplebase, type Simplebase } from "simplebase";
+import { createSimplebase, type Simplebase } from "@marcelsud/simplebase";
 
 let databaseUrl: string;
 let admin: Pool;

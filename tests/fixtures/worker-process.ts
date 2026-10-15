@@ -1,4 +1,4 @@
-import { createSimplebase } from "simplebase";
+import { createSimplebase } from "@marcelsud/simplebase";
 
 const scenario = Bun.argv[2];
 const runtime = await createSimplebase({ storage: { engine: "postgres", url: process.env.DATABASE_URL! } });

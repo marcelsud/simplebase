@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { createSimplebase, type Simplebase, type HandlerContext } from "simplebase";
+import { createSimplebase, type Simplebase, type HandlerContext } from "@marcelsud/simplebase";
 import { dispatchEvent, type LocalEvent } from "../src/runtime.ts";
 import { MAX_ATTEMPTS } from "../src/postgres.ts";
 import { cleanupFixtures, createFixture, startDatabase, stopDatabase, waitUntil, type Fixture } from "./database.ts";
