@@ -1,9 +1,9 @@
 {
   "name": "@marcelsud/simplebase",
-  "version": "0.1.0",
-  "description": "Composable backend primitives for Bun and PostgreSQL.",
+  "version": "0.1.1",
+  "description": "Simple tools for building complex apps with Bun and PostgreSQL.",
   "type": "module",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "packageManager": "bun@1.3.14",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
