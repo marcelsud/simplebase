@@ -40,7 +40,7 @@ test("the npm tarball installs, imports, and typechecks in an independent applic
     expect(manifest.version).toBe(project.version);
 
     await writeFile(join(consumer, "main.ts"), `
-import { createSimplebase, type Simplebase, type HandlerContext } from ${JSON.stringify(project.name)};
+import { createSimplebase, type Simplebase, type HandlerContext, type StartOptions } from ${JSON.stringify(project.name)};
 
 async function check(): Promise<void> {
   const runtime: Simplebase = await createSimplebase({ storage: { engine: "postgres", url: "" } });
@@ -51,6 +51,15 @@ async function check(): Promise<void> {
   const result: { message: string } = await greet({ name: "world" });
   // @ts-expect-error The published declarations must reject the wrong action input.
   await greet({ name: 123 });
+  runtime.subscription<{ id: number }>("created", async (ctx, event) => {
+    await ctx.queue.enqueue("sync", event);
+  }, { name: "enqueueSync" });
+  // @ts-expect-error Published subscriptions require a stable name.
+  runtime.subscription("created", () => {});
+  // @ts-expect-error The old idempotent option is no longer accepted.
+  runtime.subscription("created", () => {}, { name: "old", idempotent: true });
+  const options: StartOptions = { signals: false, beforeStop: async () => {} };
+  await runtime.start(options);
   await runtime.stop();
   void result;
 }

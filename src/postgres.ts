@@ -7,7 +7,14 @@ const RETRY_DELAY_MS = 1_000;
 export interface Job {
   id: string;
   queue_name: string;
+  destination_kind: "queue" | "subscription";
+  topic: string | null;
   payload_json: unknown;
+}
+
+export interface SubscriptionBinding {
+  topic: string;
+  name: string;
 }
 
 export function encodePayload(payload: unknown): string {
@@ -58,6 +65,9 @@ export async function createPostgresStore(url: string) {
 
   try {
     await transaction(async (client) => {
+      await client.query(`SELECT pg_advisory_xact_lock(
+        hashtextextended(current_database() || ':' || current_schema() || ':simplebase:init', 0)
+      )`);
       await client.query(`
         CREATE TABLE IF NOT EXISTS _simplebase_queue_jobs (
           id BIGSERIAL PRIMARY KEY,
@@ -72,6 +82,23 @@ export async function createPostgresStore(url: string) {
           completed_at TIMESTAMPTZ
         )
       `);
+      const { rows } = await client.query(`
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = '_simplebase_queue_jobs'
+          AND column_name = 'destination_kind'
+      `);
+      if (rows.length === 0) {
+        await client.query(`ALTER TABLE _simplebase_queue_jobs
+          ADD COLUMN destination_kind TEXT NOT NULL DEFAULT 'queue'
+            CHECK (destination_kind IN ('queue', 'subscription')),
+          ADD COLUMN topic TEXT
+        `);
+      }
+      await client.query(`CREATE TABLE IF NOT EXISTS _simplebase_subscriptions (
+        topic TEXT NOT NULL,
+        name TEXT NOT NULL,
+        PRIMARY KEY (topic, name)
+      )`);
       await client.query(`
         CREATE INDEX IF NOT EXISTS idx_simplebase_queue_jobs_pending_due
         ON _simplebase_queue_jobs(available_at_ms, id) WHERE status = 'pending'
@@ -84,18 +111,40 @@ export async function createPostgresStore(url: string) {
 
   return {
     transaction,
+    async bindSubscriptions(bindings: SubscriptionBinding[]): Promise<void> {
+      await transaction(async (client) => {
+        await client.query(`
+          INSERT INTO _simplebase_subscriptions (topic, name)
+          SELECT * FROM unnest($1::text[], $2::text[]) ORDER BY 1, 2
+          ON CONFLICT DO NOTHING
+        `, [bindings.map((binding) => binding.topic), bindings.map((binding) => binding.name)]);
+      });
+    },
+    async publish(client: PoolClient, topic: string, payloadJson: string): Promise<void> {
+      await client.query(`
+        INSERT INTO _simplebase_queue_jobs (destination_kind, topic, queue_name, payload_json, available_at_ms)
+        SELECT 'subscription', topic, name, $2::jsonb, floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint
+        FROM _simplebase_subscriptions WHERE topic = $1
+      `, [topic, payloadJson]);
+    },
     async enqueue(client: PoolClient, queue: string, payload: unknown): Promise<void> {
       await client.query(
-        "INSERT INTO _simplebase_queue_jobs (queue_name, payload_json, status, available_at_ms) VALUES ($1, $2::jsonb, 'pending', $3)",
-        [queue, encodePayload(payload), Date.now()],
+        `INSERT INTO _simplebase_queue_jobs (queue_name, payload_json, available_at_ms)
+         VALUES ($1, $2::jsonb, floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint)`,
+        [queue, encodePayload(payload)],
       );
     },
-    async nextJob(client: PoolClient, queues: string[]): Promise<Job | undefined> {
+    async nextJob(client: PoolClient, queues: string[], bindings: SubscriptionBinding[]): Promise<Job | undefined> {
       const { rows } = await client.query<Job>(`
-        SELECT id, queue_name, payload_json FROM _simplebase_queue_jobs
-        WHERE status = 'pending' AND queue_name = ANY($1::text[]) AND available_at_ms <= $2
-        ORDER BY available_at_ms, id LIMIT 1 FOR UPDATE
-      `, [queues, Date.now()]);
+        SELECT id, queue_name, destination_kind, topic, payload_json FROM _simplebase_queue_jobs
+        WHERE status = 'pending'
+          AND available_at_ms <= floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint
+          AND ((destination_kind = 'queue' AND queue_name = ANY($1::text[]))
+            OR (destination_kind = 'subscription' AND (topic, queue_name) IN (
+              SELECT * FROM unnest($2::text[], $3::text[])
+            )))
+        ORDER BY available_at_ms, id LIMIT 1 FOR UPDATE SKIP LOCKED
+      `, [queues, bindings.map((binding) => binding.topic), bindings.map((binding) => binding.name)]);
       return rows[0];
     },
     async complete(client: PoolClient, id: string): Promise<void> {
@@ -104,14 +153,16 @@ export async function createPostgresStore(url: string) {
         last_error = NULL, completed_at = NOW(), updated_at = NOW() WHERE id = $1
       `, [id]);
     },
-    async fail(id: string, error: unknown): Promise<void> {
+    async fail(client: PoolClient, id: string, error: unknown): Promise<void> {
       const message = error instanceof Error ? error.message : String(error);
-      await pool.query(`
+      await client.query(`
         UPDATE _simplebase_queue_jobs SET attempt_count = attempt_count + 1,
         status = CASE WHEN attempt_count + 1 >= $2 THEN 'failed' ELSE 'pending' END,
-        last_error = $3, available_at_ms = $4, updated_at = NOW()
+        last_error = $3,
+        available_at_ms = floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint + $4,
+        updated_at = NOW()
         WHERE id = $1 AND status = 'pending'
-      `, [id, MAX_ATTEMPTS, message, Date.now() + RETRY_DELAY_MS]);
+      `, [id, MAX_ATTEMPTS, message, RETRY_DELAY_MS]);
     },
     close: () => pool.end(),
   };

@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { createPostgresStore, encodePayload, POLL_INTERVAL_MS, type Job } from "./postgres.js";
+import { createPostgresStore, encodePayload, POLL_INTERVAL_MS, type SubscriptionBinding } from "./postgres.js";
 import { v, type Validator } from "./validators.js";
 
 export interface HandlerContext {
@@ -13,41 +13,14 @@ export interface SimplebaseOptions {
   storage: { engine: "postgres"; url: string };
 }
 
-export type SubscriptionOptions =
-  | { idempotent: true; name: string }
-  | { idempotent?: false; name?: string };
+export interface SubscriptionOptions { name: string }
+
+export interface StartOptions {
+  signals?: boolean;
+  beforeStop?: () => void | Promise<void>;
+}
 
 type Handler<Payload = unknown> = (ctx: HandlerContext, payload: Payload) => unknown | Promise<unknown>;
-interface Subscription {
-  handler: Handler;
-  idempotent: boolean;
-  name?: string;
-}
-
-// Internal helper exports let tests exercise redelivery without adding a public replay API.
-export interface LocalEvent {
-  topic: string;
-  payload: unknown;
-  delivered: Set<string>;
-  delivery?: Promise<void>;
-}
-
-export function dispatchEvent(
-  event: LocalEvent,
-  subscriptions: readonly Subscription[],
-  invoke: (handler: Handler, payload: unknown, onCommit: () => void) => Promise<unknown>,
-): Promise<void> {
-  const delivery = (event.delivery ?? Promise.resolve()).catch(() => {}).then(async () => {
-    for (const entry of subscriptions) {
-      if (entry.idempotent && event.delivered.has(entry.name!)) continue;
-      await invoke(entry.handler, structuredClone(event.payload), () => {
-        if (entry.idempotent) event.delivered.add(entry.name!);
-      });
-    }
-  });
-  event.delivery = delivery;
-  return delivery;
-}
 
 function requireName(value: string, kind: string): void {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${kind} requires a nonempty name`);
@@ -56,30 +29,64 @@ function requireName(value: string, kind: string): void {
 export async function createSimplebase(options: SimplebaseOptions) {
   if (options.storage.engine !== "postgres") throw new Error("This prototype supports PostgreSQL storage");
   const store = await createPostgresStore(options.storage.url);
-  const subscriptions = new Map<string, Subscription[]>();
+  const subscriptions = new Map<string, Map<string, Handler>>();
+  const bindings: SubscriptionBinding[] = [];
   const workers = new Map<string, Handler>();
   const actions = new Set<Promise<unknown>>();
   let closing = false;
   let running = false;
   let loop: Promise<void> | undefined;
+  let startPromise: Promise<void> | undefined;
   let stopPromise: Promise<void> | undefined;
   let wake: (() => void) | undefined;
+  let beforeStop: StartOptions["beforeStop"];
+  const signals = ["SIGINT", "SIGTERM"] as const;
+
+  function removeSignalHandlers(): void {
+    for (const signal of signals) process.off(signal, onSignal);
+  }
+
+  function onSignal(): void {
+    void stop().catch((error) => {
+      console.error("Simplebase shutdown failed", error);
+      process.exitCode = 1;
+    });
+  }
+
+  function stop(): Promise<void> {
+    if (stopPromise) return stopPromise;
+    running = false;
+    wake?.();
+    removeSignalHandlers();
+    if (!beforeStop) closing = true;
+    stopPromise = Promise.resolve().then(async () => {
+      try {
+        await beforeStop?.();
+      } finally {
+        closing = true;
+        await Promise.allSettled(startPromise ? [startPromise] : []);
+        await loop;
+        await Promise.allSettled([...actions]);
+        await store.close();
+      }
+    });
+    return stopPromise;
+  }
 
   function ensureOpen(): void {
     if (closing) throw new Error("Simplebase is stopped");
   }
 
-  async function dispatch(events: LocalEvent[]): Promise<void> {
-    for (const event of events) {
-      await dispatchEvent(event, [...(subscriptions.get(event.topic) ?? [])], invoke);
-    }
+  function ensureDeclaring(): void {
+    ensureOpen();
+    if (startPromise) throw new Error("Declare consumers before calling start()");
   }
 
   async function inContext<T>(
     client: PoolClient,
-    events: LocalEvent[],
     handler: (ctx: HandlerContext) => Promise<T>,
   ): Promise<T> {
+    const events: { topic: string; payloadJson: string }[] = [];
     let active = true;
     function ensureActive(): void {
       if (!active) throw new Error("Handler context is no longer active");
@@ -96,8 +103,7 @@ export async function createSimplebase(options: SimplebaseOptions) {
         publish(topic, payload) {
           ensureActive();
           requireName(topic, "Event topic");
-          const snapshot: unknown = JSON.parse(encodePayload(payload));
-          events.push({ topic, payload: snapshot, delivered: new Set() });
+          events.push({ topic, payloadJson: encodePayload(payload) });
         },
       },
       queue: {
@@ -110,43 +116,40 @@ export async function createSimplebase(options: SimplebaseOptions) {
       log: { info: (message, fields) => console.info(message, fields ?? {}) },
     };
     try {
-      return await handler(ctx);
+      const result = await handler(ctx);
+      active = false;
+      for (const event of events) await store.publish(client, event.topic, event.payloadJson);
+      return result;
     } finally {
       active = false;
     }
   }
 
-  async function invoke(handler: Handler, payload: unknown, onCommit?: () => void): Promise<unknown> {
-    const events: LocalEvent[] = [];
-    const result = await store.transaction((client) => inContext(client, events, async (ctx) => handler(ctx, payload)));
-    onCommit?.();
-    // shortcut: events live only in memory; add durable delivery when a use case requires recovery across this gap.
-    await dispatch(events);
-    return result;
+  async function invoke(handler: Handler, payload: unknown): Promise<unknown> {
+    return store.transaction((client) => inContext(client, async (ctx) => handler(ctx, payload)));
   }
 
   async function processJob(): Promise<boolean> {
-    if (workers.size === 0) return false;
-    let job: Job | undefined;
-    const events: LocalEvent[] = [];
-    try {
-      await store.transaction(async (client) => {
-        job = await store.nextJob(client, [...workers.keys()]);
-        if (!job) return;
-        await inContext(client, events, async (ctx) => workers.get(job!.queue_name)!(ctx, job!.payload_json));
+    return store.transaction(async (client) => {
+      if (!running) return false;
+      const job = await store.nextJob(client, [...workers.keys()], bindings);
+      if (!job || !running) return false;
+      const handler = job.destination_kind === "queue"
+        ? workers.get(job.queue_name)!
+        : subscriptions.get(job.topic!)!.get(job.queue_name)!;
+      // The claim predates the savepoint, so rollback keeps its lock through retry bookkeeping.
+      await client.query("SAVEPOINT handler");
+      try {
+        await inContext(client, async (ctx) => handler(ctx, job.payload_json));
         await store.complete(client, job.id);
-      });
-    } catch (error) {
-      if (!job) throw error;
-      // shortcut: a crash before this separate update can add an attempt; use stronger accounting when it matters.
-      await store.fail(job.id, error);
-      console.error("Worker failed", { queue: job.queue_name, jobId: job.id, error });
+        await client.query("RELEASE SAVEPOINT handler");
+      } catch (error) {
+        await client.query("ROLLBACK TO SAVEPOINT handler");
+        await store.fail(client, job.id, error);
+        console.error("Delivery failed", { destination: job.destination_kind, name: job.queue_name, jobId: job.id, error });
+      }
       return true;
-    }
-    if (!job) return false;
-    // Delivery failures here must not retry an already committed job.
-    await dispatch(events);
-    return true;
+    });
   }
 
   function waitForPoll(): Promise<void> {
@@ -189,47 +192,48 @@ export async function createSimplebase(options: SimplebaseOptions) {
     subscription<Payload = Record<string, unknown>>(
       topic: string,
       handler: Handler<Payload>,
-      subscriptionOptions: SubscriptionOptions = {},
+      subscriptionOptions: SubscriptionOptions,
     ): void {
-      ensureOpen();
+      ensureDeclaring();
       requireName(topic, "Event topic");
-      if (subscriptionOptions.idempotent) requireName(subscriptionOptions.name, "Idempotent subscription");
-      if (subscriptionOptions.name !== undefined) requireName(subscriptionOptions.name, "Subscription");
-      const entries = subscriptions.get(topic) ?? [];
-      if (subscriptionOptions.name && entries.some((entry) => entry.name === subscriptionOptions.name)) {
-        throw new Error(`Duplicate subscription name on ${topic}: ${subscriptionOptions.name}`);
+      const name = subscriptionOptions?.name;
+      requireName(name, "Subscription");
+      const entries = subscriptions.get(topic) ?? new Map<string, Handler>();
+      if (entries.has(name)) {
+        throw new Error(`Duplicate subscription name on ${topic}: ${name}`);
       }
-      entries.push({
-        handler: (ctx, payload) => handler(ctx, payload as Payload),
-        idempotent: subscriptionOptions.idempotent === true,
-        name: subscriptionOptions.name,
-      });
+      entries.set(name, (ctx, payload) => handler(ctx, payload as Payload));
       subscriptions.set(topic, entries);
+      bindings.push({ topic, name });
     },
     worker<Payload = Record<string, unknown>>(queue: string, handler: Handler<Payload>): void {
-      ensureOpen();
+      ensureDeclaring();
       requireName(queue, "Queue");
       if (workers.has(queue)) throw new Error(`Duplicate worker for queue: ${queue}`);
       workers.set(queue, (ctx, payload) => handler(ctx, payload as Payload));
     },
-    async start(): Promise<void> {
+    async start(startOptions: StartOptions = {}): Promise<void> {
       ensureOpen();
-      if (running) return;
-      running = true;
-      loop = workerLoop();
+      if (stopPromise) throw new Error("Simplebase is stopped");
+      if (!startPromise) {
+        beforeStop = startOptions.beforeStop;
+        if (startOptions.signals !== false) {
+          for (const signal of signals) process.once(signal, onSignal);
+        }
+        startPromise = store.bindSubscriptions(bindings).then(() => {
+          ensureOpen();
+          if (stopPromise) throw new Error("Simplebase is stopped");
+          running = true;
+          if (workers.size || bindings.length) loop = workerLoop();
+        }).catch((error) => {
+          removeSignalHandlers();
+          startPromise = undefined;
+          throw error;
+        });
+      }
+      await startPromise;
     },
-    stop(): Promise<void> {
-      if (stopPromise) return stopPromise;
-      closing = true;
-      running = false;
-      wake?.();
-      stopPromise = (async () => {
-        await loop;
-        await Promise.allSettled([...actions]);
-        await store.close();
-      })();
-      return stopPromise;
-    },
+    stop,
   };
 }
 

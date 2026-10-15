@@ -1,4 +1,4 @@
-import type { Simplebase, Infer } from "@marcelsud/simplebase";
+import type { Simplebase, Infer, StartOptions } from "@marcelsud/simplebase";
 
 function checkContract(runtime: Simplebase): void {
   const { action, subscription, worker, v, start, stop } = runtime;
@@ -19,15 +19,19 @@ function checkContract(runtime: Simplebase): void {
   createCustomer({ email: 1, name: "Sam", plan: "starter" });
   subscription("customer.created", async (ctx, event) => {
     await ctx.queue.enqueue("customer.sync", event);
-  }, { idempotent: true, name: "enqueueCustomerSync" });
-  // @ts-expect-error Idempotent subscriptions require a name.
-  subscription("bad", async () => {}, { idempotent: true });
+  }, { name: "enqueueCustomerSync" });
+  // @ts-expect-error All subscriptions require a stable name.
+  subscription("bad", async () => {});
+  // @ts-expect-error The idempotent option has been removed.
+  subscription("bad", async () => {}, { name: "old", idempotent: true });
+  subscription<{ id: number }>("typed", (_ctx, event) => event.id, { name: "typed" });
   worker("customer.sync", async (ctx, event) => {
     ctx.log.info("syncing", { customerId: event.customerId });
     await ctx.db.query("UPDATE customers SET synced_at = NOW() WHERE id = $1", [event.customerId]);
   });
   worker<{ customerId: number }>("typed.sync", (_ctx, event) => event.customerId + 1);
-  const started: Promise<void> = start();
+  const options: StartOptions = { signals: false, beforeStop: async () => {} };
+  const started: Promise<void> = start(options);
   const stopped: Promise<void> = stop();
   void [result, started, stopped];
 }

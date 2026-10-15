@@ -36,7 +36,7 @@ const createCustomer = action({
 
 subscription("customer.created", async (ctx, event) => {
   await ctx.queue.enqueue("customer.sync", event);
-}, { idempotent: true, name: "enqueueCustomerSync" });
+}, { name: "enqueueCustomerSync" });
 
 worker("customer.sync", async (ctx, event) => {
   ctx.log.info("syncing customer", { customerId: event.customerId });
