@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
-import { createPostgresStore, encodePayload, POLL_INTERVAL_MS, type Job } from "./postgres.ts";
-import { v, type Validator } from "./validators.ts";
+import { createPostgresStore, encodePayload, POLL_INTERVAL_MS, type Job } from "./postgres.js";
+import { v, type Validator } from "./validators.js";
 
 export interface HandlerContext {
   db: { query<T = Record<string, unknown>>(sql: string, params?: readonly unknown[]): Promise<T[]> };

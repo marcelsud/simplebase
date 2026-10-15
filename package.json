@@ -1,14 +1,23 @@
 {
   "name": "simplebase",
-  "version": "0.0.0-prototype",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Composable backend primitives for Bun and PostgreSQL.",
   "type": "module",
   "license": "Apache-2.0",
   "packageManager": "bun@1.3.14",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
+  "files": ["dist", "LICENSE", "NOTICE", "README.md"],
+  "publishConfig": { "access": "public" },
   "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "prepack": "bun run build",
     "test": "bun test --timeout 20000",
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun run test",

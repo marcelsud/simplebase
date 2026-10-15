@@ -1,3 +1,3 @@
-export { createSimplebase } from "./runtime.ts";
-export type { Simplebase, SimplebaseOptions, HandlerContext, SubscriptionOptions } from "./runtime.ts";
-export type { Validator, Infer } from "./validators.ts";
+export { createSimplebase } from "./runtime.js";
+export type { Simplebase, SimplebaseOptions, HandlerContext, SubscriptionOptions } from "./runtime.js";
+export type { Validator, Infer } from "./validators.js";
