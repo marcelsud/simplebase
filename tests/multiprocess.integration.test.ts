@@ -173,13 +173,18 @@ test.each(["subscription", "worker"])("killing a %s before commit rolls back eff
   const id = await publisher.publish();
   await crashing.wait("entered");
   expect(await fixture.rows("SELECT * FROM delivery_effects")).toEqual([]);
+  expect(await fixture.rows("SELECT * FROM _simplebase_collections")).toEqual([]);
   await crashing.kill();
+  expect(await fixture.rows("SELECT * FROM _simplebase_collections")).toEqual([]);
   expect((await fixture.rows("SELECT * FROM _simplebase_queue_jobs")).length).toBe(1);
   await spawnRuntime(fixture, role).start();
   await completed(fixture, role === "worker" ? "queue" : "subscription", 1);
   const [delivery] = await fixture.rows("SELECT attempt_count FROM _simplebase_queue_jobs ORDER BY id LIMIT 1");
   expect(delivery.attempt_count).toBe(1);
   expect((await fixture.rows("SELECT * FROM delivery_effects")).length).toBe(1);
+  expect((await fixture.rows("SELECT data FROM _simplebase_collections"))[0].data).toEqual({
+    customerId: id, kind: role === "worker" ? "worker" : "subscription:enqueueCustomerSync",
+  });
   if (role === "worker") await synced(fixture, id);
 });
 
@@ -190,11 +195,13 @@ test.each(["subscription", "worker"])("killing a %s after completion never repea
   const first = await publisher.publish();
   const kind = role === "worker" ? "queue" : "subscription";
   await completed(fixture, kind, 1);
+  expect((await fixture.rows("SELECT * FROM _simplebase_collections")).length).toBe(1);
   await original.kill();
   await spawnRuntime(fixture, role).start();
   await publisher.publish();
   await completed(fixture, kind, 2);
   expect((await fixture.rows("SELECT * FROM delivery_effects WHERE customer_id = $1", [first])).length).toBe(1);
+  expect((await fixture.rows("SELECT * FROM _simplebase_collections WHERE data->>'customerId' = $1", [String(first)])).length).toBe(1);
   expect((await fixture.rows("SELECT attempt_count FROM _simplebase_queue_jobs WHERE destination_kind = $1 AND status = 'completed'", [kind])).map((row) => row.attempt_count)).toEqual([1, 1]);
 });
 
@@ -218,6 +225,7 @@ test.each(["subscription", "worker"])("%s failure bookkeeping and PostgreSQL ret
   expect(failed.attempt_count).toBe(MAX_ATTEMPTS);
   expect(failed.last_error).toContain("transaction is aborted");
   expect(await fixture.rows("SELECT * FROM delivery_effects")).toEqual([]);
+  expect(await fixture.rows("SELECT * FROM _simplebase_collections")).toEqual([]);
   expect((await fixture.rows("SELECT sync_count FROM customers"))[0].sync_count).toBe(0);
   expect((await fixture.rows("SELECT * FROM _simplebase_queue_jobs")).length).toBe(1);
 });

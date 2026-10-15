@@ -19,6 +19,7 @@ async function barrier(customerId: number): Promise<void> {
 
 async function effect(ctx: HandlerContext, kind: string, customerId: number): Promise<void> {
   await ctx.db.query("INSERT INTO delivery_effects (kind, customer_id) VALUES ($1, $2)", [kind, customerId]);
+  await ctx.collection.insert("delivery.effects", { kind, customerId });
   if (scenario === "before-commit") await barrier(customerId);
   if (scenario === "fail") throw new Error("consumer unavailable");
   if (scenario === "caught-sql") {
@@ -43,7 +44,7 @@ if (role === "worker" || role === "combined" || role === "signal-worker") {
 }
 
 const publish = runtime.action({
-  args: runtime.v.object({ email: runtime.v.string() }),
+  args: runtime.schema.object({ email: runtime.schema.string() }),
   async handler(ctx, input) {
     const [customer] = await ctx.db.query<{ id: number }>(
       "INSERT INTO customers (email, name, plan) VALUES ($1, 'Test', 'starter') RETURNING id", [input.email],

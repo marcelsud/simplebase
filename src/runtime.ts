@@ -1,9 +1,15 @@
 import type { PoolClient } from "pg";
 import { createPostgresStore, encodePayload, POLL_INTERVAL_MS, type SubscriptionBinding } from "./postgres.js";
-import { v, type Validator } from "./validators.js";
+import { schema, type Validator } from "./validators.js";
 
 export interface HandlerContext {
   db: { query<T = Record<string, unknown>>(sql: string, params?: readonly unknown[]): Promise<T[]> };
+  collection: {
+    insert(name: string, document: Record<string, unknown>): Promise<string>;
+    get<T extends object = Record<string, unknown>>(name: string, id: string): Promise<(T & { id: string }) | null>;
+    update(name: string, id: string, patch: Record<string, unknown>): Promise<boolean>;
+    delete(name: string, id: string): Promise<boolean>;
+  };
   pubsub: { publish(topic: string, payload: unknown): void };
   queue: { enqueue(queue: string, payload: unknown): Promise<void> };
   log: { info(message: string, fields?: Record<string, unknown>): void };
@@ -24,6 +30,19 @@ type Handler<Payload = unknown> = (ctx: HandlerContext, payload: Payload) => unk
 
 function requireName(value: string, kind: string): void {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${kind} requires a nonempty name`);
+}
+
+function encodeDocument(document: Record<string, unknown>): string {
+  function validate(value: unknown): void {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new TypeError("Collection documents and patches must be JSON objects");
+    }
+    if (Object.hasOwn(value, "id")) throw new TypeError("Collection documents and patches cannot supply id");
+  }
+  validate(document);
+  const json = encodePayload(document);
+  validate(JSON.parse(json));
+  return json;
 }
 
 export async function createSimplebase(options: SimplebaseOptions) {
@@ -99,6 +118,49 @@ export async function createSimplebase(options: SimplebaseOptions) {
           return result.rows as T[];
         },
       },
+      collection: {
+        async insert(name, document) {
+          ensureActive();
+          requireName(name, "Collection");
+          const json = encodeDocument(document);
+          const id = crypto.randomUUID();
+          await ctx.db.query(
+            "INSERT INTO _simplebase_collections (collection_name, id, data) VALUES ($1, $2::uuid, $3::jsonb)",
+            [name, id, json],
+          );
+          return id;
+        },
+        async get<T extends object>(name: string, id: string): Promise<(T & { id: string }) | null> {
+          ensureActive();
+          requireName(name, "Collection");
+          requireName(id, "Document ID");
+          const [row] = await ctx.db.query<{ document: T & { id: string } }>(
+            "SELECT data || jsonb_build_object('id', id) AS document FROM _simplebase_collections WHERE collection_name = $1 AND id = $2::uuid",
+            [name, id],
+          );
+          return row?.document ?? null;
+        },
+        async update(name, id, patch) {
+          ensureActive();
+          requireName(name, "Collection");
+          requireName(id, "Document ID");
+          const rows = await ctx.db.query(
+            "UPDATE _simplebase_collections SET data = data || $3::jsonb WHERE collection_name = $1 AND id = $2::uuid RETURNING id",
+            [name, id, encodeDocument(patch)],
+          );
+          return rows.length > 0;
+        },
+        async delete(name, id) {
+          ensureActive();
+          requireName(name, "Collection");
+          requireName(id, "Document ID");
+          const rows = await ctx.db.query(
+            "DELETE FROM _simplebase_collections WHERE collection_name = $1 AND id = $2::uuid RETURNING id",
+            [name, id],
+          );
+          return rows.length > 0;
+        },
+      },
       pubsub: {
         publish(topic, payload) {
           ensureActive();
@@ -171,7 +233,7 @@ export async function createSimplebase(options: SimplebaseOptions) {
   }
 
   return {
-    v,
+    schema,
     action<Input, Result>(definition: {
       args: Validator<Input>;
       handler: (ctx: HandlerContext, input: Input) => Result | Promise<Result>;

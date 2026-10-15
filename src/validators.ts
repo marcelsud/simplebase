@@ -201,7 +201,7 @@ function unionValidator(
 }
 
 
-export const v = {
+export const schema = {
   any(): Validator<unknown> {
     return this.unknown();
   },

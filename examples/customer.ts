@@ -7,10 +7,10 @@ const simplebase = await createSimplebase({
   },
 });
 
-const { action, subscription, v, worker, start, stop } = simplebase;
+const { action, subscription, schema, worker, start, stop } = simplebase;
 
 const initializeCustomers = action({
-  args: v.object({}),
+  args: schema.object({}),
   async handler(ctx) {
     await ctx.db.query(`CREATE TABLE IF NOT EXISTS customers (
       id SERIAL PRIMARY KEY,
@@ -23,7 +23,7 @@ const initializeCustomers = action({
 });
 
 const createCustomer = action({
-  args: v.object({ email: v.string(), name: v.string(), plan: v.string() }),
+  args: schema.object({ email: schema.string(), name: schema.string(), plan: schema.string() }),
   async handler(ctx, input) {
     const [customer] = await ctx.db.query<{ id: number }>(
       "insert into customers (email, name, plan) values ($1, $2, $3) returning id",
@@ -44,7 +44,7 @@ worker("customer.sync", async (ctx, event) => {
 });
 
 const getCustomer = action({
-  args: v.object({ id: v.integer() }),
+  args: schema.object({ id: schema.integer() }),
   async handler(ctx, input) {
     const [customer] = await ctx.db.query<{ id: number; email: string; synced_at: Date | null }>(
       "select id, email, synced_at from customers where id = $1", [input.id],

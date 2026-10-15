@@ -44,9 +44,25 @@ import { createSimplebase, type Simplebase, type HandlerContext, type StartOptio
 
 async function check(): Promise<void> {
   const runtime: Simplebase = await createSimplebase({ storage: { engine: "postgres", url: "" } });
+  // @ts-expect-error The published API exposes schema without the old v shortcut.
+  runtime.v;
   const greet = runtime.action({
-    args: runtime.v.object({ name: runtime.v.string() }),
-    handler(_ctx: HandlerContext, input) { return { message: input.name }; },
+    args: runtime.schema.object({ name: runtime.schema.string() }),
+    async handler(ctx: HandlerContext, input) {
+      const id: string = await ctx.collection.insert("notes", { body: input.name });
+      const note = await ctx.collection.get<{ body: string }>("notes", id);
+      if (note) {
+        const noteId: string = note.id;
+        const body: string = note.body;
+        // @ts-expect-error Published types preserve the requested document shape.
+        const invalid: number = note.body;
+        void [noteId, body, invalid];
+      }
+      const updated: boolean = await ctx.collection.update("notes", id, { body: "revised" });
+      const deleted: boolean = await ctx.collection.delete("notes", id);
+      void [updated, deleted];
+      return { message: input.name };
+    },
   });
   const result: { message: string } = await greet({ name: "world" });
   // @ts-expect-error The published declarations must reject the wrong action input.

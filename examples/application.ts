@@ -5,13 +5,13 @@ const app = await createSimplebase({ storage: {
   url: process.env.DATABASE_URL ?? "postgresql://simplebase:simplebase@127.0.0.1:55432/simplebase",
 } });
 
-await app.action({ args: app.v.object({}), async handler(ctx) {
+await app.action({ args: app.schema.object({}), async handler(ctx) {
   await ctx.db.query(`CREATE TABLE IF NOT EXISTS customers (
     id SERIAL PRIMARY KEY, email TEXT NOT NULL, name TEXT NOT NULL, plan TEXT NOT NULL, synced_at TIMESTAMPTZ
   )`);
 } })({});
 
-const input = app.v.object({ email: app.v.string(), name: app.v.string(), plan: app.v.string() });
+const input = app.schema.object({ email: app.schema.string(), name: app.schema.string(), plan: app.schema.string() });
 const createCustomer = app.action({ args: input, async handler(ctx, customer) {
   const [row] = await ctx.db.query<{ id: number }>(
     "INSERT INTO customers (email, name, plan) VALUES ($1, $2, $3) RETURNING id",
@@ -20,7 +20,7 @@ const createCustomer = app.action({ args: input, async handler(ctx, customer) {
   ctx.pubsub.publish("customer.created", { customerId: row.id });
   return row;
 } });
-const listCustomers = app.action({ args: app.v.object({}), handler(ctx) {
+const listCustomers = app.action({ args: app.schema.object({}), handler(ctx) {
   return ctx.db.query("SELECT id, email, name, plan, synced_at FROM customers ORDER BY id");
 } });
 

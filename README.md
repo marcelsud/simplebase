@@ -8,6 +8,7 @@ Start with a function. Add SQL, events, and background work as you need them.
 
 - **Functions** handle application logic with validated inputs.
 - **SQL** gives you direct access to your data.
+- **Collections** store flexible JSON documents by ID.
 - **Events** let different features react to the same change.
 - **Jobs** move work into the background and survive restarts.
 
@@ -38,7 +39,7 @@ const app = await createSimplebase({
 });
 
 const welcome = app.action({
-  args: app.v.object({ name: app.v.string() }),
+  args: app.schema.object({ name: app.schema.string() }),
 
   async handler(ctx, input) {
     await ctx.queue.enqueue("welcome", input);
@@ -96,6 +97,43 @@ cd simplebase
 bun install --frozen-lockfile
 bun run db:up
 bun run example
+```
+
+## Collections
+
+Store JSON documents without creating an application table for each shape. Collections are available in actions, subscriptions, and workers through `ctx.collection`:
+
+```ts
+const createNote = app.action({
+  args: app.schema.object({ body: app.schema.string() }),
+  handler(ctx, input) {
+    return ctx.collection.insert("notes", input);
+  },
+});
+
+const id = await createNote({ body: "First note" });
+```
+
+Inside a handler, use the returned UUID to read or mutate the document:
+
+```ts
+const note = await ctx.collection.get<{ body: string }>("notes", id);
+await ctx.collection.update("notes", id, { body: "Revised note" });
+await ctx.collection.delete("notes", id);
+```
+
+`insert` returns a generated UUID string. `get<T>` returns the document with its `id`, or `null` for a missing document. `update` and `delete` return booleans indicating whether the document existed. Names scope every operation and require no per-collection setup. A missing UUID returns `null` or `false`; malformed UUIDs are rejected by PostgreSQL.
+
+Documents and patches must be JSON objects using the same JSON encoder as events and jobs. Top-level arrays, non-JSON values, and a supplied top-level `id` are rejected. IDs are immutable. `get<T>` supplies a compile-time row type; validate application data with `schema` when needed.
+
+Patches replace the supplied top-level fields and preserve all other fields. Nested objects and arrays are replaced as whole fields, and `null` is stored as a value. An empty patch succeeds for an existing document. A single JSONB update applies each patch atomically: concurrent patches to different fields survive, while overlapping fields follow PostgreSQL's write order.
+
+Documents live in `_simplebase_collections` (`collection_name`, `id`, `data`), keyed by collection name and UUID. Operations use the handler's existing guarded database query and transaction. Document changes, SQL writes, enqueued jobs, explicit publications, and delivery completion commit or roll back together. Collection operations publish no implicit events. Use `ctx.db.query()` for document queries beyond retrieval by ID.
+
+After starting PostgreSQL, run the note example:
+
+```bash
+bun run example:collections
 ```
 
 ## Run separate processes
@@ -158,12 +196,7 @@ await app.start({ beforeStop: () => server.stop() });
 
 On a signal or explicit `stop()`, the runtime stops claiming deliveries and runs `beforeStop` once. Actions remain available while that callback drains existing HTTP requests. After it finishes, the runtime rejects new actions, drains in-flight work, and closes the pool. Signal listeners are removed on shutdown or startup failure. A failing callback still triggers runtime cleanup; signal-triggered cleanup errors are logged and set the process exit code to 1. Simplebase lets the process exit naturally without forcing termination.
 
-## Upgrade from 0.1.1
-
-1. Pause publisher traffic and stop all old consumers, draining their work. Running old and new consumer versions together is unsupported.
-2. Add `{ name: "stableName" }` to every subscription and remove `idempotent`. Account for asynchronous subscriber execution and the loss of creation-order dispatch. Awaiting an action confirms only its own commit; observe application state when a workflow must finish.
-3. Initialize the new runtime against the existing database. Initialization serializes concurrent migrations and adds destination metadata to existing worker jobs without discarding their payloads, states, attempts, errors, or timestamps. Events held only in memory by 0.1.1 cannot be recovered.
-4. Start the new subscription and worker processes. Wait for their `start()` calls to finish before resuming publishers.
+## Subscription lifecycle
 
 Keep stable names across deploys. Renaming creates a new subscription with no historical replay; the old binding continues receiving deliveries until explicitly retired. Either finish the old backlog with its old handler or deliberately discard it during retirement.
 
@@ -184,7 +217,7 @@ Completed records remain for inspection. Remove the declaration from future depl
 
 ## Current scope
 
-Simplebase is an early prototype supporting combined and split deployments with replicated actions, subscriptions, and workers. Polling processes handle one delivery at a time, using `FOR UPDATE SKIP LOCKED` to share work. Scale concurrency by adding processes.
+Simplebase is an early prototype and its API may change between releases. It supports combined and split deployments with replicated actions, subscriptions, and workers. Polling processes handle one delivery at a time, using `FOR UPDATE SKIP LOCKED` to share work. Scale concurrency by adding processes.
 
 Each running handler holds a PostgreSQL transaction and connection for its duration. Long handlers therefore occupy connections and retain locks; size pools and keep handlers short for your workload. There is no separate broker, event history, leader election, lease system, or process discovery.
 

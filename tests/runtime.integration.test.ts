@@ -9,7 +9,7 @@ afterAll(stopDatabase);
 
 function customerAction(runtime: Simplebase) {
   return runtime.action({
-    args: runtime.v.object({ email: runtime.v.string(), name: runtime.v.string(), plan: runtime.v.string() }),
+    args: runtime.schema.object({ email: runtime.schema.string(), name: runtime.schema.string(), plan: runtime.schema.string() }),
     async handler(ctx, input) {
       const [customer] = await ctx.db.query<{ id: number }>(
         "INSERT INTO customers (email, name, plan) VALUES ($1, $2, $3) RETURNING id",
@@ -40,6 +40,7 @@ test("root import, destructured factories, and actions before and after start", 
   const fixture = await createFixture();
   const runtime = await fixture.runtime();
   const { start, stop } = runtime;
+  expect(Object.hasOwn(runtime, "v")).toBe(false);
   attachSync(runtime);
   const createCustomer = customerAction(runtime);
   const before = await createCustomer(customerInput);
@@ -51,7 +52,7 @@ test("root import, destructured factories, and actions before and after start", 
   expect((await fixture.rows("SELECT sync_count FROM customers WHERE id = $1", [before.id]))[0].sync_count).toBe(0);
   expect((await fixture.rows("SELECT email FROM customers WHERE id = $1", [after.id]))[0].email).toBe("O'Reilly'); DROP TABLE customers;--");
   expect((await fixture.rows("SELECT status FROM _simplebase_queue_jobs")).every((job) => job.status === "completed")).toBe(true);
-  expect((await fixture.rows("SELECT COUNT(*)::int AS count FROM information_schema.tables WHERE table_schema = current_schema() AND table_name LIKE '_simplebase_%'"))[0].count).toBe(2);
+  expect((await fixture.rows("SELECT COUNT(*)::int AS count FROM information_schema.tables WHERE table_schema = current_schema() AND table_name LIKE '_simplebase_%'"))[0].count).toBe(3);
   await Promise.all([stop(), stop()]);
 });
 
@@ -63,7 +64,7 @@ test("invalid input and action rollback persist neither application writes nor d
   // @ts-expect-error Deliberately exercise runtime validation.
   await expect(customerAction(runtime)({ ...customerInput, email: 1 })).rejects.toThrow("args.email must be a string");
   const fail = runtime.action({
-    args: runtime.v.object({}),
+    args: runtime.schema.object({}),
     async handler(ctx) {
       await ctx.db.query("INSERT INTO customers (email, name, plan) VALUES ('bad', 'bad', 'bad')");
       ctx.pubsub.publish("customer.created", { customerId: 1 });
@@ -98,7 +99,7 @@ test("pending jobs survive replacement and undeclared queues remain pending", as
   const fixture = await createFixture();
   const original = await fixture.runtime();
   const customer = await customerAction(original)(customerInput);
-  await original.action({ args: original.v.object({}), async handler(ctx) {
+  await original.action({ args: original.schema.object({}), async handler(ctx) {
     await ctx.queue.enqueue("unknown.queue", customer);
     await ctx.queue.enqueue("customer.sync", { customerId: customer.id });
   } })({});
@@ -160,7 +161,7 @@ test("subscriber failure never retries a completed publishing worker", async () 
   runtime.subscription("worker.done", () => { throw new Error("subscriber unavailable"); }, { name: "observe" });
   runtime.worker("publisher", (ctx) => { ctx.pubsub.publish("worker.done", {}); });
   await runtime.start();
-  await runtime.action({ args: runtime.v.object({}), async handler(ctx) { await ctx.queue.enqueue("publisher", {}); } })({});
+  await runtime.action({ args: runtime.schema.object({}), async handler(ctx) { await ctx.queue.enqueue("publisher", {}); } })({});
   await waitUntil(async () => (await fixture.rows("SELECT attempt_count FROM _simplebase_queue_jobs WHERE topic = 'worker.done'"))[0]?.attempt_count >= 1);
   await runtime.stop();
   expect((await fixture.rows("SELECT status, attempt_count FROM _simplebase_queue_jobs WHERE destination_kind = 'queue'"))[0]).toEqual({ status: "completed", attempt_count: 1 });
@@ -186,7 +187,7 @@ test("publications are snapshots and chained subscriptions observe committed eff
     deliveries.push("second");
   }, { name: "second" });
   await runtime.start();
-  await runtime.action({ args: runtime.v.object({}), handler(ctx) {
+  await runtime.action({ args: runtime.schema.object({}), handler(ctx) {
     const payload = { value: "original" };
     ctx.pubsub.publish("parent", payload);
     payload.value = "changed after publishing";
@@ -200,7 +201,7 @@ test("a caught SQL error cannot report a successful action commit", async () => 
   const runtime = await fixture.runtime();
   runtime.subscription("event", () => {}, { name: "observe" });
   await runtime.start();
-  const invoke = runtime.action({ args: runtime.v.object({}), async handler(ctx) {
+  const invoke = runtime.action({ args: runtime.schema.object({}), async handler(ctx) {
     try { await ctx.db.query("INSERT INTO missing_table VALUES (1)"); } catch {}
     ctx.pubsub.publish("event", {});
     return "success";
@@ -223,7 +224,7 @@ test("stop drains in-flight actions and deliveries and refuses new work", async 
     await ctx.queue.enqueue("later", {});
   });
   await runtime.start();
-  const enqueue = runtime.action({ args: runtime.v.object({}), async handler(ctx) { await ctx.queue.enqueue("drain", {}); } });
+  const enqueue = runtime.action({ args: runtime.schema.object({}), async handler(ctx) { await ctx.queue.enqueue("drain", {}); } });
   await enqueue({});
   await ready;
   const stopped = runtime.stop();
@@ -238,7 +239,7 @@ test("stop drains in-flight actions and deliveries and refuses new work", async 
   const other = await fixture.runtime();
   let release!: () => void;
   const actionGate = new Promise<void>((resolve) => { release = resolve; });
-  const invoke = other.action({ args: other.v.object({}), async handler(ctx) {
+  const invoke = other.action({ args: other.schema.object({}), async handler(ctx) {
     await actionGate;
     await ctx.queue.enqueue("after-stop", {});
   } });
@@ -257,12 +258,12 @@ test("contexts expire; publishers use durable bindings from another runtime", as
   let calls = 0;
   consumer.subscription("event", () => { calls += 1; }, { name: "observe" });
   await consumer.start();
-  await publisher.action({ args: publisher.v.object({}), handler(ctx) { captured = ctx; ctx.pubsub.publish("event", {}); } })({});
+  await publisher.action({ args: publisher.schema.object({}), handler(ctx) { captured = ctx; ctx.pubsub.publish("event", {}); } })({});
   await waitUntil(async () => calls === 1);
   await expect(captured.db.query("SELECT 1")).rejects.toThrow("no longer active");
   await expect(captured.queue.enqueue("job", {})).rejects.toThrow("no longer active");
   expect(() => captured.pubsub.publish("event", {})).toThrow("no longer active");
-  expect(consumer.v).toBe(publisher.v);
+  expect(consumer.schema).toBe(publisher.schema);
 });
 
 test("start installs signal handlers once, supports opt-out and preserves host listeners", async () => {
@@ -297,7 +298,7 @@ test("beforeStop lets an HTTP request invoke its action while the server drains"
   const gate = new Promise<void>((resolve) => { release = resolve; });
   const ready = new Promise<void>((resolve) => { entered = resolve; });
   const shutdown = new Promise<void>((resolve) => { stopping = resolve; });
-  const action = runtime.action({ args: runtime.v.object({}), async handler(ctx) {
+  const action = runtime.action({ args: runtime.schema.object({}), async handler(ctx) {
     await ctx.queue.enqueue("http.request", {});
     return "committed";
   } });
@@ -328,7 +329,7 @@ test("a failing beforeStop still drains and closes storage", async () => {
   const fixture = await createFixture();
   const runtime = await createSimplebase({ storage: { engine: "postgres", url: fixture.url } });
   const before = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
-  const pid = runtime.action({ args: runtime.v.object({}), async handler(ctx) {
+  const pid = runtime.action({ args: runtime.schema.object({}), async handler(ctx) {
     return (await ctx.db.query<{ pid: number }>("SELECT pg_backend_pid() AS pid"))[0].pid;
   } });
   await runtime.start({ beforeStop: () => { throw new Error("cleanup failed"); } });
@@ -366,12 +367,12 @@ test("consumer declarations require unique names before start; non-JSON payloads
   // @ts-expect-error JavaScript callers must also supply options.
   expect(() => runtime.subscription("event", () => {})).toThrow("nonempty name");
   expect(() => runtime.subscription("event", () => {}, { name: " " })).toThrow("nonempty name");
-  const bad = runtime.action({ args: runtime.v.object({}), async handler(ctx) {
+  const bad = runtime.action({ args: runtime.schema.object({}), async handler(ctx) {
     await ctx.db.query("INSERT INTO customers (email, name, plan) VALUES ('bad', 'bad', 'bad')");
     await ctx.queue.enqueue("one", { id: 1n });
   } });
   await expect(bad({})).rejects.toThrow("JSON values");
-  const badEvent = runtime.action({ args: runtime.v.object({}), handler(ctx) { ctx.pubsub.publish("event", { value: undefined }); } });
+  const badEvent = runtime.action({ args: runtime.schema.object({}), handler(ctx) { ctx.pubsub.publish("event", { value: undefined }); } });
   await expect(badEvent({})).rejects.toThrow("JSON values");
   expect(await fixture.rows("SELECT * FROM customers")).toEqual([]);
   const starting = runtime.start();

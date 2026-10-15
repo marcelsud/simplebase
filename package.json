@@ -1,6 +1,6 @@
 {
   "name": "@marcelsud/simplebase",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Simple tools for building complex apps with Bun and PostgreSQL.",
   "type": "module",
   "license": "MIT",
@@ -22,6 +22,7 @@
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun run test",
     "example": "bun run examples/customer.ts",
+    "example:collections": "bun run examples/notes.ts",
     "db:up": "docker compose up -d --wait",
     "db:down": "docker compose down"
   },
