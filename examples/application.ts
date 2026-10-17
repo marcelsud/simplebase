@@ -1,10 +1,13 @@
 import { createSimplebase, Get } from "@marcelsud/simplebase";
 import { bun } from "@marcelsud/simplebase/http/bun";
 
-const app = await createSimplebase({ storage: {
-  engine: "postgres",
-  url: process.env.DATABASE_URL ?? "postgresql://simplebase:simplebase@127.0.0.1:55432/simplebase",
-} });
+const app = await createSimplebase({
+  storage: {
+    engine: "postgres",
+    url: process.env.DATABASE_URL ?? "postgresql://simplebase:simplebase@127.0.0.1:55432/simplebase",
+  },
+  http: bun({ port: Number(process.env.PORT ?? 3000) }),
+});
 
 await app.action({ args: app.schema.object({}), async handler(ctx) {
   await ctx.db.query(`CREATE TABLE IF NOT EXISTS customers (
@@ -34,5 +37,5 @@ class Customers {
 }
 app.controller(new Customers());
 
-await app.start({ http: bun({ port: Number(process.env.PORT ?? 3000) }) });
+await app.start();
 console.info(`Application ready at ${app.http!.url}`);

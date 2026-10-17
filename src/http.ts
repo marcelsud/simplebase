@@ -1,5 +1,6 @@
-import { encodePayload } from "./postgres.js";
-import { ValidationError, type Validator } from "./validators.js";
+import { encodePayload } from "./core/payload.js";
+import { ValidationError, type Parser } from "./core/contracts.js";
+import type { Validator } from "./validators.js";
 
 export type HttpMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 type MaybePromise<T> = T | Promise<T>;
@@ -62,7 +63,7 @@ interface RegisteredRoute {
 
 const methods: HttpMethod[] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 
-function parse<T>(validator: Validator<T>, value: unknown, path: string): T {
+function parse<T>(validator: Parser<T>, value: unknown, path: string): T {
   try { return validator.parse(value, path); }
   catch (error) { throw new ValidationError(error instanceof Error ? error.message : String(error)); }
 }

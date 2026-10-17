@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { createSimplebase, type Simplebase, type HandlerContext } from "@marcelsud/simplebase";
-import { MAX_ATTEMPTS } from "../src/postgres.ts";
+import { MAX_ATTEMPTS } from "../src/core/contracts.ts";
 import { cleanupFixtures, createFixture, startDatabase, stopDatabase, waitUntil, type Fixture } from "./database.ts";
 
 beforeAll(startDatabase, 20_000);

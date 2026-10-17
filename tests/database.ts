@@ -1,5 +1,5 @@
 import { Pool, type QueryResultRow } from "pg";
-import { createSimplebase, type Simplebase } from "@marcelsud/simplebase";
+import { createSimplebase, type Simplebase, type SimplebaseOptions } from "@marcelsud/simplebase";
 
 let databaseUrl: string;
 let admin: Pool;
@@ -52,7 +52,7 @@ export async function cleanupFixtures(): Promise<void> {
 
 export interface Fixture {
   url: string;
-  runtime(): Promise<Simplebase>;
+  runtime(options?: Pick<SimplebaseOptions, "http">): Promise<Simplebase>;
   rows<T extends QueryResultRow = QueryResultRow>(sql: string, params?: unknown[]): Promise<T[]>;
   close(): Promise<void>;
 }
@@ -67,8 +67,8 @@ export async function createFixture(): Promise<Fixture> {
   const runtimes: Simplebase[] = [];
   const fixture: Fixture = {
     url,
-    async runtime() {
-      const runtime = await createSimplebase({ storage: { engine: "postgres", url } });
+    async runtime(options) {
+      const runtime = await createSimplebase({ ...options, storage: { engine: "postgres", url } });
       runtimes.push(runtime);
       return runtime;
     },

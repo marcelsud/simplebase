@@ -200,14 +200,23 @@ app.controller(new Notes());
 
 ### Adapters
 
-Choose the adapter at startup:
+Choose the adapter when creating the application:
 
 ```ts
+import { createSimplebase } from "@marcelsud/simplebase";
 import { node } from "@marcelsud/simplebase/http/node";
 
-await app.start({ http: node({ port: 3000 }) });
+const app = await createSimplebase({
+  storage: { engine: "postgres", url: process.env.DATABASE_URL! },
+  http: node({ port: 3000 }),
+});
+
+app.route("GET", "/health", () => ({ ok: true }));
+await app.start();
 console.info(app.http!.url);
 ```
+
+The adapter starts only when `start()` is called. You can also select it at startup with `app.start({ http: node({ port: 3000 }) })`. Configure `http` in one place: supplying it to both `createSimplebase()` and `start()` rejects startup, even if it is the same adapter.
 
 | Adapter | Import | Runtime |
 | --- | --- | --- |
@@ -241,11 +250,11 @@ Express accepts the same `{ app, port, hostname }` options. `getExpressContext(h
 
 Middleware before Simplebase routes should leave the request body unread. The core owns JSON parsing and validation; do not put `express.json()` before the Simplebase bridge. Existing framework routes can use their own parsers. Native framework paths remain available alongside Simplebase paths.
 
-`app.fetch(request)` also works without a server. For an application-owned server, mount `toHono(app.fetch)` or `toExpress(app.fetch)` from the respective adapter module, then call `app.start()` without `http`. The host application owns server shutdown and can drain it with `beforeStop`.
+`app.fetch(request)` also works without a server. For an application-owned server, mount `toHono(app.fetch)` or `toExpress(app.fetch)` from the respective adapter module, then call `app.start()` with no `http` configured in either `createSimplebase()` or `start()`. The host application owns server shutdown and can drain it with `beforeStop`.
 
 An adapter is an asynchronous function that receives `app.fetch` and returns `{ url, stop }`. It can pass native context as the second argument to `fetch`. New adapters reuse the same route dispatcher, validation, transformations, and error handling.
 
-With `start({ http })`, `stop()` closes the listener, drains HTTP requests and actions, and then closes PostgreSQL. Signal handling and `signals: false` work with every adapter. A failed startup removes its signal handlers and allows retry. Without `http`, the runtime continues to support processes dedicated to workers and subscriptions.
+With an HTTP adapter configured, `stop()` closes the listener, drains HTTP requests and actions, and then closes PostgreSQL. Signal handling and `signals: false` work with every adapter. A failed startup removes its signal handlers and allows retry. Without `http`, the runtime continues to support processes dedicated to workers and subscriptions.
 
 ### HTTP examples
 

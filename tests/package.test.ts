@@ -57,7 +57,10 @@ class Controller {
 }
 
 async function check(): Promise<void> {
-  const runtime: Simplebase = await createSimplebase({ storage: { engine: "postgres", url: "" } });
+  const runtime: Simplebase = await createSimplebase({
+    storage: { engine: "postgres", url: "" },
+    http: node({ port: 0 }),
+  });
   // @ts-expect-error The published API exposes schema without the old v shortcut.
   runtime.v;
   const greet = runtime.action({
@@ -100,7 +103,7 @@ async function check(): Promise<void> {
   runtime.subscription("created", () => {});
   // @ts-expect-error The old idempotent option is no longer accepted.
   runtime.subscription("created", () => {}, { name: "old", idempotent: true });
-  const options: StartOptions = { signals: false, http: node({ port: 0 }), beforeStop: async () => {} };
+  const options: StartOptions = { signals: false, beforeStop: async () => {} };
   await runtime.start(options);
   await runtime.stop();
   void result;

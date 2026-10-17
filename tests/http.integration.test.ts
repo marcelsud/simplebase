@@ -51,7 +51,7 @@ test("HTTP bindings retain action validation, rollback and output after commit",
 for (const [name, adapter] of [["bun", bun], ["node", node], ["hono", hono], ["express", express]] as const) {
   test(`${name}: start/stop owns HTTP, drains requests and keeps actions open until they finish`, async () => {
     const fixture = await createFixture();
-    const app = await fixture.runtime();
+    const app = await fixture.runtime({ http: adapter({ port: 0 }) });
     let release!: () => void;
     let entered!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -65,7 +65,8 @@ for (const [name, adapter] of [["bun", bun], ["node", node], ["hono", hono], ["e
       async slow(_http: HttpContext) { entered(); await gate; return { id: await create({}) }; }
     }
     app.controller(new Controller());
-    await app.start({ http: adapter({ port: 0 }), signals: false });
+    expect(app.http).toBeUndefined();
+    await app.start({ signals: false });
     const url = app.http!.url;
     expect(await (await fetch(new URL("/health", url))).json()).toEqual({ ok: true });
     const pending = fetch(new URL("/slow", url), { method: "POST" });
@@ -84,18 +85,38 @@ for (const [name, adapter] of [["bun", bun], ["node", node], ["hono", hono], ["e
   });
 }
 
+test("HTTP adapters cannot be configured in both createSimplebase and start", async () => {
+  const fixture = await createFixture();
+  const adapter = node({ port: 0 });
+  const app = await fixture.runtime({ http: adapter });
+  const before = process.listenerCount("SIGTERM");
+  for (const http of [adapter, bun({ port: 0 })]) {
+    await expect(app.start({ http })).rejects.toThrow("either createSimplebase() or start(), not both");
+    expect(process.listenerCount("SIGTERM")).toBe(before);
+    expect(app.http).toBeUndefined();
+  }
+  app.route("GET", "/health", () => ({ ok: true }));
+  await app.start({ signals: false });
+  expect(await (await fetch(new URL("/health", app.http!.url))).json()).toEqual({ ok: true });
+});
+
 test("an adapter startup failure removes signals and allows retry", async () => {
   const fixture = await createFixture();
-  const app = await fixture.runtime();
-  app.route("GET", "/health", () => ({ ok: true }));
   const occupied = await node({ port: 0 })(async () => new Response("occupied"));
   const before = process.listenerCount("SIGTERM");
   try {
-    await expect(app.start({ http: node({ port: Number(occupied.url.port) }) })).rejects.toThrow();
+    const app = await fixture.runtime({ http: node({ port: Number(occupied.url.port) }) });
+    app.route("GET", "/health", () => ({ ok: true }));
+    await expect(app.start()).rejects.toThrow();
     expect(process.listenerCount("SIGTERM")).toBe(before);
     expect(app.http).toBeUndefined();
-    await app.start({ http: node({ port: 0 }), signals: false });
+    await occupied.stop();
+    app.worker("after-failed-start", () => {});
+    app.subscription("after-failed-start", () => {}, { name: "afterFailedStart" });
+    app.route("GET", "/after-failed-start", () => ({ ok: true }));
+    await app.start({ signals: false });
     expect(await (await fetch(new URL("/health", app.http!.url))).json()).toEqual({ ok: true });
+    expect(await (await fetch(new URL("/after-failed-start", app.http!.url))).json()).toEqual({ ok: true });
   } finally { await occupied.stop(); }
 });
 

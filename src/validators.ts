@@ -1,15 +1,12 @@
 // Adapted from Chimpbase's existing validators; see LICENSE and NOTICE.
-export class ValidationError extends Error {
-  override name = "ValidationError";
-}
+import type { Parser } from "./core/contracts.js";
 
-export interface Validator<T = unknown> {
+export interface Validator<T = unknown> extends Parser<T> {
   readonly isOptional?: true;
   readonly schema: unknown;
   array(): Validator<T[]>;
   nullable(): Validator<T | null>;
   optional(): OptionalValidator<T | undefined>;
-  parse(value: unknown, path?: string): T;
 }
 export interface OptionalValidator<T = unknown> extends Validator<T> {
   readonly isOptional: true;

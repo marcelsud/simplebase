@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { schema } from "../src/validators.ts";
-import { encodePayload } from "../src/postgres.ts";
+import { encodePayload } from "../src/core/payload.ts";
 
 test("object validation checks required keys, validates nested values, and strips extra keys", () => {
   const args = schema.object({ email: schema.string(), settings: schema.object({ active: schema.boolean() }), tags: schema.string().array() });
