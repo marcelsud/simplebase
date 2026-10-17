@@ -1,9 +1,10 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createPostgresStore } from "./postgres.js";
 import { schema, type Validator } from "./validators.js";
 import { createHttpRouter, type HttpAdapter, type HttpHandler, type HttpServer, type HttpMethod } from "./http.js";
 import { createCollections, type Collections } from "./collections.js";
 import { createRuntime } from "./core/runtime.js";
-import type { CoreContext } from "./core/contracts.js";
+import type { CoreContext, ExecutionState } from "./core/contracts.js";
 export type { SubscriptionOptions } from "./core/contracts.js";
 
 export interface HandlerContext extends CoreContext {
@@ -24,11 +25,16 @@ export interface StartOptions {
 export async function createSimplebase(options: SimplebaseOptions) {
   if (options.storage.engine !== "postgres") throw new Error("This prototype supports PostgreSQL storage");
   const store = await createPostgresStore(options.storage.url);
+  const executions = new AsyncLocalStorage<ExecutionState<HandlerContext>>();
   const runtime = createRuntime<HandlerContext>(store,
     (ctx, ensureActive) => ({ ...ctx, collection: createCollections(ctx.db, ensureActive) }),
     {
       info: (message, fields) => console.info(message, fields ?? {}),
       error: (message, fields) => console.error(message, fields),
+    },
+    {
+      get: () => executions.getStore(),
+      run: (execution, handler) => executions.run(execution, handler),
     },
   );
   const router = createHttpRouter();

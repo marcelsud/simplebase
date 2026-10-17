@@ -155,22 +155,54 @@ test("compiled decorators, actions and the Node/Hono/Express adapters run in rea
   const adapters = pathToFileURL(resolve(root, "dist/http")).href + "/";
   const source = `
     import assert from "node:assert/strict";
+    import { request as nodeRequest } from "node:http";
+    import createExpress from "express";
     import { createSimplebase, Get, Post, type HttpContext } from ${JSON.stringify(entrypoint)};
+    function rawGet(base, path) {
+      return new Promise((resolve, reject) => {
+        const req = nodeRequest({ hostname: base.hostname, port: base.port, path, agent: false }, res => {
+          res.resume();
+          res.on("end", () => resolve(res.statusCode));
+          res.on("error", reject);
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    }
     for (const name of ["node", "hono", "express"]) {
       const adapter = (await import(${JSON.stringify(adapters)} + name + ".js"))[name];
       const app = await createSimplebase({ storage: { engine: "postgres", url: process.env.SIMPLEBASE_TEST_PG_URL! } });
       try {
         const input = app.schema.object({ title: app.schema.string() });
-        const create = app.action({ args: input, async handler(ctx, data) {
+        const insert = app.action({ args: input, async handler(ctx, data) {
           const id = await ctx.collection.insert("node-http", data);
           await ctx.queue.enqueue("node-http", { id });
-          return { id, title: data.title };
+          const [row] = await ctx.db.query("SELECT pg_backend_pid() AS pid");
+          return { id, title: data.title, pid: row.pid };
+        } });
+        const create = app.action({ args: input, async handler(ctx, data) {
+          const [row] = await ctx.db.query("SELECT pg_backend_pid() AS pid");
+          const result = await insert(data);
+          assert.equal(result.pid, row.pid);
+          return { id: result.id, title: result.title };
         } });
         app.route("POST", "/notes", {
           body: app.schema.object({ data: input }), action: create,
           input: ({ body }) => body.data,
           output: (data) => ({ data }), status: 201,
         });
+        for (const status of [204, 205, 304]) {
+          app.route("DELETE", "/empty/" + status, { status, action: app.action({
+            args: app.schema.object({}), async handler(ctx) {
+              const id = await ctx.collection.insert("bodyless", { status });
+              return ctx.collection.delete("bodyless", id);
+            },
+          }) });
+        }
+        let privateCalls = 0;
+        app.route("GET", "/admin", () => { privateCalls++; return "private"; });
+        const middleware = createExpress();
+        middleware.use("/admin", (_req, res) => res.status(401).send("authentication required"));
         class Controller {
           prefix = name;
           @Get("/health")
@@ -179,7 +211,7 @@ test("compiled decorators, actions and the Node/Hono/Express adapters run in rea
           create(http: HttpContext<{ title: string }>) { return create(http.body); }
         }
         app.controller(new Controller());
-        await app.start({ signals: false, http: adapter({ port: 0 }) });
+        await app.start({ signals: false, http: adapter({ port: 0, ...(name === "express" ? { app: middleware } : {}) }) });
         const base = app.http!.url;
         assert.deepEqual(await (await fetch(new URL("/health", base))).json(), { adapter: name, native: true });
         const response = await fetch(new URL("/notes", base), { method: "POST", body: JSON.stringify({ data: { title: name } }) });
@@ -189,6 +221,17 @@ test("compiled decorators, actions and the Node/Hono/Express adapters run in rea
         assert.equal(decorated.status, 201);
         assert.equal((await decorated.json()).title, name + "-decorated");
         assert.equal((await fetch(new URL("/notes", base), { method: "POST", body: "{" })).status, 400);
+        for (const status of [204, 205, 304]) {
+          const empty = await fetch(new URL("/empty/" + status, base), { method: "DELETE" });
+          assert.equal(empty.status, status);
+          assert.equal(await empty.text(), "");
+        }
+        if (name === "express") assert.equal(await rawGet(base, "/admin"), 401);
+        for (const path of ["//unused/admin", "/public/../admin", "/public/%2e%2e/admin", "/public" + String.fromCharCode(92) + ".." + String.fromCharCode(92) + "admin"]) {
+          assert.equal(await rawGet(base, path), 400, path);
+        }
+        assert.equal(await rawGet(base, "/%61dmin"), 404);
+        assert.equal(privateCalls, 0);
       } finally { await app.stop(); }
     }
     console.log("Node adapters and decorators verified");
@@ -208,5 +251,6 @@ test("compiled decorators, actions and the Node/Hono/Express adapters run in rea
     expect(output).toContain("Node adapters and decorators verified");
     expect((await fixture.rows("SELECT * FROM _simplebase_collections WHERE collection_name = 'node-http'")).length).toBe(6);
     expect((await fixture.rows("SELECT * FROM _simplebase_queue_jobs WHERE queue_name = 'node-http'")).length).toBe(6);
+    expect(await fixture.rows("SELECT * FROM _simplebase_collections WHERE collection_name = 'bodyless'")).toEqual([]);
   } finally { clearTimeout(timeout); child.kill(); }
 }, 20_000);

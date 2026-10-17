@@ -1,11 +1,32 @@
 import { expect, test } from "bun:test";
 import { Hono } from "hono";
 import createExpress from "express";
+import { createServer } from "node:http";
+import { createConnection } from "node:net";
 import { createHttpRouter, type HttpAdapter } from "../src/http.ts";
 import { bun, getBunContext } from "@marcelsud/simplebase/http/bun";
 import { node, getNodeContext } from "@marcelsud/simplebase/http/node";
 import { hono, getHonoContext } from "@marcelsud/simplebase/http/hono";
-import { express, getExpressContext } from "@marcelsud/simplebase/http/express";
+import { express, toExpress, getExpressContext } from "@marcelsud/simplebase/http/express";
+import { listen } from "../src/http/node.ts";
+
+function rawGet(url: URL, path: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection({ host: url.hostname, port: Number(url.port) }, () => {
+      socket.write(`GET ${path} HTTP/1.1\r\nHost: ${url.host}\r\nConnection: close\r\n\r\n`);
+    });
+    let response = "";
+    socket.setEncoding("utf8");
+    socket.setTimeout(2_000, () => socket.destroy(new Error("Raw request timed out")));
+    socket.on("data", (chunk) => { response += chunk; });
+    socket.on("end", () => {
+      const status = /^HTTP\/1\.[01] (\d{3})/.exec(response)?.[1];
+      if (status) resolve(Number(status));
+      else reject(new Error(`Invalid HTTP response: ${response}`));
+    });
+    socket.on("error", reject);
+  });
+}
 
 const adapters: [string, () => HttpAdapter][] = [
   ["bun", () => bun({ port: 0 })], ["node", () => node({ port: 0 })],
@@ -141,3 +162,39 @@ test("Express middleware and existing routes coexist with Simplebase routes", as
     expect(await (await fetch(new URL("/existing", server.url))).text()).toBe("existing");
   } finally { await server.stop(); }
 });
+
+for (const mounted of [false, true]) {
+  test(`Express ${mounted ? "mounted bridge" : "adapter"}: path aliases cannot bypass scoped authentication`, async () => {
+    const api = createExpress();
+    const prefix = mounted ? "/api" : "";
+    api.use(`${prefix}/admin`, (req, res, next) => {
+      if (req.headers.authorization === "Bearer test") next();
+      else res.status(401).send("authentication required");
+    });
+    const router = createHttpRouter();
+    let privateCalls = 0;
+    router.route("GET", "/admin", () => { privateCalls++; return { private: true }; });
+    router.route("GET", "/notes/:id", ({ params, query }) => ({ params, query }));
+    if (mounted) api.use(prefix, toExpress(router.fetch));
+    const server = mounted
+      ? await listen(createServer(api), { port: 0 })
+      : await express({ app: api, port: 0 })(router.fetch);
+    try {
+      expect(await rawGet(server.url, `${prefix}/admin`)).toBe(401);
+      for (const path of ["//unused/admin", "/public/../admin", "/public/%2e%2e/admin", "/public\\..\\admin", "/public//../admin"]) {
+        expect({ path, status: await rawGet(server.url, prefix + path) }).toEqual({ path, status: 400 });
+      }
+      expect(await rawGet(server.url, `${prefix}/%61dmin`)).toBe(404);
+      expect(privateCalls).toBe(0);
+      const allowed = await fetch(new URL(`${prefix}/admin`, server.url), { headers: { authorization: "Bearer test" } });
+      expect(allowed.status).toBe(200);
+      expect(await allowed.json()).toEqual({ private: true });
+      expect(privateCalls).toBe(1);
+      const valid = await fetch(new URL(`${prefix}/notes/caf%C3%A9%20a%2Fb%252F?next=/public/../admin&other=//unused/admin`, server.url));
+      expect(valid.status).toBe(200);
+      expect(await valid.json()).toEqual({
+        params: { id: "café a/b%2F" }, query: { next: "/public/../admin", other: "//unused/admin" },
+      });
+    } finally { await server.stop(); }
+  });
+}

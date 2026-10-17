@@ -76,6 +76,7 @@ async function readJson(request: Request): Promise<unknown> {
 
 function responseFor(value: unknown, status?: number): Response {
   if (value instanceof Response) return value;
+  if (status === 204 || status === 205 || status === 304) return new Response(null, { status });
   if (value === undefined) return new Response(null, { status: status ?? 204 });
   return new Response(encodePayload(value), {
     status: status ?? 200,
@@ -100,6 +101,9 @@ export function createHttpRouter() {
     if (!methods.includes(method)) throw new Error(`Unsupported HTTP method: ${method}`);
     if (typeof path !== "string" || !path.startsWith("/") || /[?#*]/.test(path) || path.includes("//")) {
       throw new Error("Routes require an absolute path with literal segments or :parameters");
+    }
+    if (new URL(path, "http://localhost").pathname !== path) {
+      throw new Error("Route paths must use URL-encoded literals without dot segments or backslashes");
     }
     const segments = path.replace(/\/$/, "").split("/").slice(1);
     const names = new Set<string>();
@@ -160,11 +164,12 @@ export function createHttpRouter() {
     let presenting = false;
     try {
       const url = new URL(request.url);
-      let segments: string[];
-      try { segments = url.pathname.replace(/\/$/, "").split("/").slice(1).map(decodeURIComponent); }
+      const segments = url.pathname.replace(/\/$/, "").split("/").slice(1);
+      let decoded: string[];
+      try { decoded = segments.map(decodeURIComponent); }
       catch { throw new ValidationError("Invalid path encoding"); }
       const matches = routes.filter((entry) => entry.segments.length === segments.length && entry.segments.every(
-        (part, index) => part.startsWith(":") || part === segments[index],
+        (part, index) => part.startsWith(":") ? segments[index] !== "" : part === segments[index],
       ));
       if (!matches.length) return new Response("Not found", { status: 404 });
       const matched = matches.find((entry) => entry.method === request.method)
@@ -179,7 +184,7 @@ export function createHttpRouter() {
           : new Response("Method not allowed", { status: 405, headers });
       }
       const params: Record<string, string> = Object.create(null);
-      matched.segments.forEach((part, index) => { if (part.startsWith(":")) params[part.slice(1)] = segments[index]; });
+      matched.segments.forEach((part, index) => { if (part.startsWith(":")) params[part.slice(1)] = decoded[index]; });
       const query: HttpQuery = Object.create(null);
       for (const key of new Set(url.searchParams.keys())) {
         const values = url.searchParams.getAll(key);

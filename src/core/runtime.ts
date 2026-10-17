@@ -1,5 +1,6 @@
 import {
   requireName, ValidationError, type CoreContext, type Logger, type Parser,
+  type ExecutionScope, type ExecutionState,
   type Store, type SubscriptionBinding, type SubscriptionOptions, type Transaction,
 } from "./contracts.js";
 import { encodePayload } from "./payload.js";
@@ -11,6 +12,7 @@ export function createRuntime<Context extends CoreContext>(
   store: Store,
   extendContext: (ctx: CoreContext, ensureActive: () => void) => Context,
   logger: Logger,
+  executions: ExecutionScope<ExecutionState<Context>>,
 ) {
   const subscriptions = new Map<string, Map<string, Handler<Context>>>();
   const bindings: SubscriptionBinding[] = [];
@@ -61,7 +63,11 @@ export function createRuntime<Context extends CoreContext>(
       log: { info: (message, fields) => logger.info(message, fields) },
     };
     try {
-      const result = await handler(extendContext(ctx, ensureActive));
+      const execution: ExecutionState<Context> = {
+        ctx: extendContext(ctx, ensureActive), ensureActive, rollbackOnly: false,
+      };
+      const result = await executions.run(execution, () => handler(execution.ctx));
+      if (execution.rollbackOnly) throw new Error("Transaction aborted by a nested action");
       active = false;
       for (const event of events) await transaction.publish(event.topic, event.payloadJson);
       return result;
@@ -133,16 +139,24 @@ export function createRuntime<Context extends CoreContext>(
     }): (input: Input) => Promise<Awaited<Result>> {
       ensureOpen();
       return async (input): Promise<Awaited<Result>> => {
-        ensureOpen();
-        let parsed: Input;
-        try { parsed = definition.args.parse(input, "args"); }
-        catch (error) { throw new ValidationError(error instanceof Error ? error.message : String(error)); }
-        const invocation = store.transaction((transaction) => inContext(transaction, async (ctx) => definition.handler(ctx, parsed)));
-        actions.add(invocation);
+        const current = executions.get();
+        if (current) current.ensureActive();
+        else ensureOpen();
         try {
-          return await invocation as Awaited<Result>;
-        } finally {
-          actions.delete(invocation);
+          let parsed: Input;
+          try { parsed = definition.args.parse(input, "args"); }
+          catch (error) { throw new ValidationError(error instanceof Error ? error.message : String(error)); }
+          if (current) return await definition.handler(current.ctx, parsed) as Awaited<Result>;
+          const invocation = store.transaction((transaction) => inContext(transaction, async (ctx) => definition.handler(ctx, parsed)));
+          actions.add(invocation);
+          try {
+            return await invocation as Awaited<Result>;
+          } finally {
+            actions.delete(invocation);
+          }
+        } catch (error) {
+          if (current) current.rollbackOnly = true;
+          throw error;
         }
       };
     },

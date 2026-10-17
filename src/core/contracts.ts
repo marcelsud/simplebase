@@ -25,6 +25,17 @@ export interface CoreContext {
   log: Pick<Logger, "info">;
 }
 
+export interface ExecutionState<Context extends CoreContext> {
+  ctx: Context;
+  ensureActive(): void;
+  rollbackOnly: boolean;
+}
+
+export interface ExecutionScope<Value> {
+  get(): Value | undefined;
+  run<Result>(value: Value, handler: () => Promise<Result>): Promise<Result>;
+}
+
 export interface Job {
   id: string;
   queue_name: string;

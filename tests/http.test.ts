@@ -40,6 +40,44 @@ test("HTTP method handling includes HEAD, OPTIONS, Allow and explicit overrides"
   expect((await router.fetch(request("/notes", { method: "OPTIONS" }))).status).toBe(200);
 });
 
+test("literal routes keep their URL spelling while parameters decode exactly once", async () => {
+  const router = createHttpRouter();
+  router.route("GET", "/admin", () => "private");
+  router.route("GET", "/caf%C3%A9", () => "encoded literal");
+  router.route("GET", "/notes/:id", ({ params }) => params.id);
+  expect((await router.fetch(request("/%61dmin"))).status).toBe(404);
+  expect(await (await router.fetch(request("/caf%C3%A9"))).json()).toBe("encoded literal");
+  for (const [encoded, decoded] of [["hello%20world", "hello world"], ["caf%C3%A9", "café"], ["a%2Fb", "a/b"], ["%252F", "%2F"]]) {
+    expect(await (await router.fetch(request(`/notes/${encoded}`))).json()).toBe(decoded);
+  }
+  expect((await router.fetch(request("/notes//"))).status).toBe(404);
+  for (const path of ["/café", "/hello world", "/public/../admin", "/public\\..\\admin"]) {
+    expect(() => router.route("GET", path, () => null)).toThrow("URL-encoded");
+  }
+});
+
+test("bodyless statuses discard JSON output and retain explicit Response precedence", async () => {
+  const router = createHttpRouter();
+  let outputs = 0;
+  for (const status of [204, 205, 304]) {
+    router.route("POST", `/empty/${status}`, {
+      action: async () => true,
+      output: () => { outputs++; return { cannotSerialize: BigInt(1) }; },
+      status,
+    });
+    const response = await router.fetch(request(`/empty/${status}`, { method: "POST" }));
+    expect(response.status).toBe(status);
+    expect(response.body).toBeNull();
+    expect(await response.text()).toBe("");
+    expect(response.headers.has("content-type")).toBe(false);
+  }
+  expect(outputs).toBe(3);
+  router.route("GET", "/override", { status: 204, handler: () => new Response("accepted", { status: 202 }) });
+  const response = await router.fetch(request("/override"));
+  expect(response.status).toBe(202);
+  expect(await response.text()).toBe("accepted");
+});
+
 test("declarative routes validate body, params and query, and retain Request for raw handlers", async () => {
   const router = createHttpRouter();
   router.route("POST", "/notes/:id", {

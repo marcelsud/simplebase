@@ -29,12 +29,25 @@ export function requestListener(
         const headers = new Headers();
         for (let index = 0; index < req.rawHeaders.length; index += 2) headers.append(req.rawHeaders[index], req.rawHeaders[index + 1]);
         const origin = `http://${headers.get("host") ?? "localhost"}`;
+        const target = req.url ?? "/";
+        let url: URL;
+        try {
+          url = new URL(target, origin);
+          const path = target.split("?")[0];
+          if (!target.startsWith("/") || path.includes("//") || url.pathname !== path || url.origin !== new URL(origin).origin) {
+            throw new Error("Invalid request target");
+          }
+        } catch {
+          res.statusCode = 400;
+          res.end("Invalid request target");
+          return;
+        }
         const init: RequestInit & { duplex?: "half" } = { method: req.method, headers, signal: abort.signal };
         if (req.method !== "GET" && req.method !== "HEAD" && (Number(headers.get("content-length")) > 0 || headers.has("transfer-encoding"))) {
           init.body = Readable.toWeb(req) as unknown as BodyInit;
           init.duplex = "half";
         }
-        const request = new Request(new URL(req.url ?? "/", origin), init);
+        const request = new Request(url, init);
         const response = await handle(request, { native: native(req, res) });
         if (res.destroyed) { await response.body?.cancel(); return; }
         res.statusCode = response.status;
