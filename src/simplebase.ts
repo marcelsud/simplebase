@@ -1,10 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createPostgresStore } from "./postgres.js";
+import type { StorageAdapter } from "./storage.js";
 import { schema, type Validator } from "./validators.js";
 import { createHttpRouter, type HttpAdapter, type HttpHandler, type HttpServer, type HttpMethod } from "./http.js";
 import { createCollections, type Collections } from "./collections.js";
 import { createKv, type Kv, type KvBackend, type KvNamespaces, type KvOptions } from "./kv.js";
-import { postgres } from "./kv/postgres.js";
 import { createRuntime } from "./core/runtime.js";
 import type { CoreContext, ExecutionState } from "./core/contracts.js";
 export type { SubscriptionOptions } from "./core/contracts.js";
@@ -15,7 +14,7 @@ export interface HandlerContext<Namespaces extends KvNamespaces = {}> extends Co
 }
 
 export interface SimplebaseOptions<Namespaces extends KvNamespaces = {}> {
-  storage: { engine: "postgres"; url: string };
+  storage: StorageAdapter;
   http?: HttpAdapter;
   kv?: KvOptions<Namespaces>;
 }
@@ -27,18 +26,21 @@ export interface StartOptions {
 }
 
 export async function createSimplebase<Namespaces extends KvNamespaces = {}>(options: SimplebaseOptions<Namespaces>) {
-  if (options.storage.engine !== "postgres") throw new Error("This prototype supports PostgreSQL storage");
+  if (typeof options.storage !== "function") throw new TypeError("Storage requires an adapter factory");
   const kv = createKv(options.kv?.namespaces);
-  const store = await createPostgresStore(options.storage.url);
-  let kvBackend: KvBackend;
-  try { kvBackend = await (options.kv?.adapter ?? postgres())(); }
+  const store = await options.storage();
+  let kvBackend: KvBackend | undefined;
+  try { kvBackend = await options.kv?.adapter?.(); }
   catch (error) { await store.close(); throw error; }
   const executions = new AsyncLocalStorage<ExecutionState<HandlerContext<Namespaces>>>();
   const runtime = createRuntime<HandlerContext<Namespaces>>(store,
-    (ctx, ensureActive) => ({
-      ...ctx, collection: createCollections(ctx.db, ensureActive),
-      kv: kv(kvBackend.bind(ctx.db), ensureActive),
-    }),
+    (ctx, ensureActive) => {
+      const drivers = store.bind(ctx.db);
+      return {
+        ...ctx, collection: createCollections(drivers.collection, ensureActive),
+        kv: kv(kvBackend ? kvBackend.bind(ctx.db) : drivers.kv, ensureActive),
+      };
+    },
     {
       info: (message, fields) => console.info(message, fields ?? {}),
       error: (message, fields) => console.error(message, fields),
@@ -88,7 +90,7 @@ export async function createSimplebase<Namespaces extends KvNamespaces = {}>(opt
       } finally {
         runtime.closeActions();
         await runtime.drain();
-        try { await kvBackend.stop?.(); }
+        try { await kvBackend?.stop?.(); }
         finally { await store.close(); }
       }
     });

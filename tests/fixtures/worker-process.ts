@@ -1,4 +1,5 @@
 import { createSimplebase, type HandlerContext } from "@marcelsud/simplebase";
+import { postgres as postgresStorage } from "@marcelsud/simplebase/storage/postgres";
 
 const [role, scenario = "normal", name = "enqueueCustomerSync"] = Bun.argv.slice(2);
 // Deliberately skew failing replicas to prove retries do not use the process clock.
@@ -7,7 +8,7 @@ await new Promise<void>((resolve) => {
   process.once("message", () => resolve());
   process.send?.({ type: "booted" });
 });
-const runtime = await createSimplebase({ storage: { engine: "postgres", url: process.env.DATABASE_URL! } });
+const runtime = await createSimplebase({ storage: postgresStorage({ url: process.env.DATABASE_URL! }) });
 const releases = new Map<number, () => void>();
 
 async function barrier(customerId: number): Promise<void> {

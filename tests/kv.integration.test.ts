@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { createClient } from "redis";
 import { createSimplebase, schema, ValidationError, type HandlerContext, type KvAdapter, type RawKvNamespace, type Simplebase } from "@marcelsud/simplebase";
+import { postgres as postgresStorage } from "@marcelsud/simplebase/storage/postgres";
 import { redis } from "@marcelsud/simplebase/kv/redis";
 import { postgres } from "@marcelsud/simplebase/kv/postgres";
 import { cleanupFixtures, createFixture, startDatabase, stopDatabase, waitUntil } from "./database.ts";
@@ -256,9 +257,10 @@ test("compiled KV namespaces and the Redis adapter run in Node.js", async () => 
   if (buildCode !== 0) throw new Error(buildOutput + buildErrors);
   const child = Bun.spawn(["node", "--input-type=module", "--eval", `
     import { createSimplebase, schema } from "./dist/index.js";
+    import { postgres as postgresStorage } from "./dist/storage/postgres.js";
     import { redis } from "./dist/kv/redis.js";
     const app = await createSimplebase({
-      storage: { engine: "postgres", url: process.env.DATABASE_URL },
+      storage: postgresStorage({ url: process.env.DATABASE_URL }),
       kv: {
         adapter: redis({ url: process.env.REDIS_URL, prefix: process.env.REDIS_PREFIX }),
         namespaces: { sessions: { schema: schema.object({ userId: schema.string() }) } },
@@ -296,7 +298,7 @@ test("bootstrap rejects invalid namespaces and closes PostgreSQL when Redis init
   let unexpected: Simplebase | undefined;
   try {
     await expect(createSimplebase({
-      storage: { engine: "postgres", url: url.toString() },
+      storage: postgresStorage({ url: url.toString() }),
       kv: { adapter: redis({ url: invalidRedisUrl.toString() }) },
     }).then((app) => { unexpected = app; return app; })).rejects.toThrow();
   } finally { await unexpected?.stop(); }

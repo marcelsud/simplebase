@@ -1,10 +1,8 @@
 import { createSimplebase, Get, Post, ValidationError, type HttpContext, type Infer } from "@marcelsud/simplebase";
+import { postgres as postgresStorage } from "@marcelsud/simplebase/storage/postgres";
 
 export async function createHttpApp() {
-  const app = await createSimplebase({ storage: {
-    engine: "postgres",
-    url: process.env.DATABASE_URL ?? "postgresql://simplebase:simplebase@127.0.0.1:55432/simplebase",
-  } });
+  const app = await createSimplebase({ storage: postgresStorage({ url: process.env.DATABASE_URL ?? "postgresql://simplebase:simplebase@127.0.0.1:55432/simplebase" }) });
 
   const noteInput = app.schema.object({ body: app.schema.string() });
   const noteId = app.schema.object({ id: app.schema.string() });

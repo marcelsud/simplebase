@@ -35,6 +35,10 @@ test("the npm tarball installs, imports, and typechecks in an independent applic
       expect(paths).toContain(`dist/kv/${adapter}.js`);
       expect(paths).toContain(`dist/kv/${adapter}.d.ts`);
     }
+    for (const adapter of ["postgres", "sqlite"]) {
+      expect(paths).toContain(`dist/storage/${adapter}.js`);
+      expect(paths).toContain(`dist/storage/${adapter}.d.ts`);
+    }
     expect(paths).toContain("README.md");
     expect(paths.every((path) => path.startsWith("dist/") || ["package.json", "README.md", "LICENSE", "NOTICE"].includes(path))).toBe(true);
 
@@ -53,6 +57,7 @@ test("the npm tarball installs, imports, and typechecks in an independent applic
 
     await writeFile(join(consumer, "main.ts"), `
 import { createSimplebase, schema, Get, type Simplebase, type HandlerContext, type StartOptions, type HttpContext } from ${JSON.stringify(project.name)};
+import { postgres as postgresStorage } from ${JSON.stringify(project.name + "/storage/postgres")};
 import { node } from ${JSON.stringify(project.name + "/http/node")};
 import { postgres } from ${JSON.stringify(project.name + "/kv/postgres")};
 
@@ -63,7 +68,7 @@ class Controller {
 
 async function check(): Promise<void> {
   const configured = await createSimplebase({
-    storage: { engine: "postgres", url: "" },
+    storage: postgresStorage({ url: "" }),
     kv: {
       adapter: postgres(),
       namespaces: { sessions: { schema: schema.object({ userId: schema.string() }) } },
@@ -82,7 +87,7 @@ async function check(): Promise<void> {
     return id;
   } });
   const runtime: Simplebase = await createSimplebase({
-    storage: { engine: "postgres", url: "" },
+    storage: postgresStorage({ url: "" }),
     http: node({ port: 0 }),
   });
   // @ts-expect-error The published API exposes schema without the old v shortcut.
@@ -141,8 +146,9 @@ void check;
     ], consumer);
     const imported = await run(["node", "--input-type=module", "--eval", `
       import { createSimplebase } from ${JSON.stringify(project.name)};
+      import { postgres as postgresStorage } from ${JSON.stringify(project.name + "/storage/postgres")};
       import { node } from ${JSON.stringify(project.name + "/http/node")};
-      try { await createSimplebase({ storage: { engine: "postgres", url: "" } }); }
+      try { await createSimplebase({ storage: postgresStorage({ url: "" }) }); }
       catch (error) {
         if (!(error instanceof Error) || !error.message.includes("requires a URL")) throw error;
         console.log("Published entrypoint works");
@@ -153,20 +159,22 @@ void check;
         if ((await response.json()).method !== "GET") throw new Error("Published Node adapter failed");
         console.log("Published Node adapter works");
       } finally { await server.stop(); }
-      for (const framework of ["hono", "express", "redis"]) {
+      for (const framework of ["hono", "express", "redis", "libsql"]) {
         try { await import(framework); throw new Error("Optional framework installed unexpectedly"); }
         catch (error) { if (error.code !== "ERR_MODULE_NOT_FOUND") throw error; }
       }
     `], consumer);
     expect(imported).toContain("Published entrypoint works");
     expect(imported).toContain("Published Node adapter works");
-    for (const dependency of ["hono", "express", "redis", "@types/express", "bun-types"]) {
+    for (const dependency of ["hono", "express", "redis", "libsql", "@types/express", "bun-types"]) {
       consumerManifest.devDependencies[dependency] = project.devDependencies[dependency];
     }
     await writeFile(join(consumer, "package.json"), JSON.stringify(consumerManifest));
     await run([process.execPath, "install", "--ignore-scripts"], consumer);
     await writeFile(join(consumer, "adapters.ts"), `
-import { type HttpAdapter, type HttpContext, type KvAdapter } from ${JSON.stringify(project.name)};
+import { type HttpAdapter, type HttpContext, type KvAdapter, type StorageAdapter } from ${JSON.stringify(project.name)};
+import { postgres } from ${JSON.stringify(project.name + "/storage/postgres")};
+import { sqlite } from ${JSON.stringify(project.name + "/storage/sqlite")};
 import { redis } from ${JSON.stringify(project.name + "/kv/redis")};
 import { bun, getBunContext } from ${JSON.stringify(project.name + "/http/bun")};
 import { node, getNodeContext } from ${JSON.stringify(project.name + "/http/node")};
@@ -176,6 +184,7 @@ import { Hono } from "hono";
 import makeExpress from "express";
 const adapters: HttpAdapter[] = [bun(), node(), hono({ app: new Hono() }), express({ app: makeExpress() })];
 const kvAdapter: KvAdapter = redis({ url: "redis://localhost:6379", prefix: "app:" });
+const storageAdapters: StorageAdapter[] = [postgres({ url: "" }), sqlite({ filename: ":memory:" })];
 function checkNative(http: HttpContext) {
   const bunPort: number | undefined = getBunContext(http)?.server.port;
   const nodeUrl: string | undefined = getNodeContext(http)?.req.url;
@@ -183,12 +192,69 @@ function checkNative(http: HttpContext) {
   const expressMethod: string | undefined = getExpressContext(http)?.req.method;
   void [bunPort, nodeUrl, honoMethod, expressMethod];
 }
-void [adapters, kvAdapter, checkNative, toHono, toExpress];
+void [adapters, kvAdapter, storageAdapters, checkNative, toHono, toExpress];
 `);
     await run([
       join(root, "node_modules/.bin/tsc"), "--noEmit", "--strict", "--target", "ES2022",
       "--module", "ESNext", "--moduleResolution", "Bundler", "--types", "bun-types", "adapters.ts",
     ], consumer);
+    const sqliteResult = await run(["node", "--input-type=module", "--eval", `
+      import assert from "node:assert/strict";
+      import { createSimplebase, schema } from ${JSON.stringify(project.name)};
+      import { sqlite } from ${JSON.stringify(project.name + "/storage/sqlite")};
+      const app = await createSimplebase({
+        storage: sqlite({ filename: "./app.sqlite" }),
+        kv: { namespaces: { sessions: { schema: schema.object({ userId: schema.string() }) } } },
+      });
+      let delivered = false;
+      app.subscription("created", async (ctx, event) => {
+        const note = await ctx.collection.get("notes", event.id);
+        assert.equal(note.body, "Node");
+        assert.equal(note.left, true);
+        assert.equal(note.right, false);
+        await ctx.queue.enqueue("notify", event);
+      }, { name: "notify" });
+      app.worker("notify", async (ctx) => {
+        assert.equal((await ctx.kv.namespace("sessions").get("session")).userId, "node");
+        delivered = true;
+      });
+      try {
+        await app.start({ signals: false });
+        const save = app.action({ args: schema.object({ fail: schema.boolean() }), async handler(ctx, input) {
+          const id = await ctx.collection.insert("notes", { body: "Node" });
+          await Promise.all([
+            ctx.collection.update("notes", id, { left: true }),
+            ctx.collection.update("notes", id, { right: false }),
+          ]);
+          await ctx.kv.namespace("sessions").set("session", { userId: "node" });
+          ctx.pubsub.publish("created", { id });
+          if (input.fail) throw new Error("rollback");
+          return id;
+        } });
+        await assert.rejects(save({ fail: true }), /rollback/);
+        await app.action({ args: schema.object({}), async handler(ctx) {
+          assert.deepEqual(await ctx.db.query("SELECT * FROM _simplebase_collections"), []);
+          assert.deepEqual(await ctx.db.query("SELECT * FROM _simplebase_kv"), []);
+          assert.deepEqual(await ctx.db.query("SELECT * FROM _simplebase_queue_jobs"), []);
+          assert.deepEqual(await ctx.db.query("SELECT ? AS value", ["parameter"]), [{ value: "parameter" }]);
+        } })({});
+        await save({ fail: false });
+        const deadline = Date.now() + 5000;
+        while (!delivered) {
+          if (Date.now() >= deadline) throw new Error("SQLite delivery timed out");
+          await new Promise(resolve => setTimeout(resolve, 25));
+        }
+      } finally { await app.stop(); }
+      const replacement = await createSimplebase({ storage: sqlite({ filename: "./app.sqlite" }) });
+      try {
+        await replacement.action({ args: schema.object({}), async handler(ctx) {
+          assert.equal((await ctx.kv.namespace("sessions").get("session")).userId, "node");
+          assert.equal((await ctx.db.query("SELECT * FROM _simplebase_queue_jobs WHERE status = 'completed'")).length, 2);
+        } })({});
+      } finally { await replacement.stop(); }
+      console.log("Published SQLite adapter works on " + process.version);
+    `], consumer);
+    expect(sqliteResult).toContain("Published SQLite adapter works on v");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

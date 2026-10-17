@@ -138,7 +138,8 @@ test("ten simultaneous action chains finish without exhausting the connection po
   const source = `
     import assert from "node:assert/strict";
     import { createSimplebase } from ${JSON.stringify(entrypoint)};
-    const app = await createSimplebase({ storage: { engine: "postgres", url: process.env.SIMPLEBASE_TEST_PG_URL } });
+    import { postgres as postgresStorage } from ${JSON.stringify(new URL("./storage/postgres.ts", entrypoint).href)};
+    const app = await createSimplebase({ storage: postgresStorage({ url: process.env.SIMPLEBASE_TEST_PG_URL }) });
     let ready = 0;
     let release;
     const gate = new Promise(resolve => { release = resolve; });

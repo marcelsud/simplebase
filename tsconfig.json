@@ -11,6 +11,7 @@
     "paths": {
       "@marcelsud/simplebase": ["./src/index.ts"],
       "@marcelsud/simplebase/http/*": ["./src/http/*.ts"],
+      "@marcelsud/simplebase/storage/*": ["./src/storage/*.ts"],
       "@marcelsud/simplebase/kv/*": ["./src/kv/*.ts"]
     }
   },

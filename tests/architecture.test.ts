@@ -13,6 +13,7 @@ function layer(file: string): number {
   if (file.startsWith("core/")) return 0;
   if (file === "http.ts") return 2;
   if (file.startsWith("http/")) return 3;
+  if (file.startsWith("storage/") || file.startsWith("kv/")) return 3;
   if (file === "simplebase.ts") return 4;
   if (file === "index.ts") return 5;
   return 1;
@@ -34,6 +35,12 @@ test("source imports, including types and re-exports, point inward", () => {
         continue;
       }
       const dependency = relative(sourceRoot, target.resolvedFileName);
+      if (file === "simplebase.ts" && (dependency.startsWith("storage/") || dependency.startsWith("kv/"))) {
+        violations.push(`${file}: bootstrap imports concrete adapter ${fileName}`);
+      }
+      if (["simplebase.ts", "collections.ts", "kv.ts", "storage.ts"].includes(file) && target.isExternalLibraryImport) {
+        violations.push(`${file}: service imports external driver ${fileName}`);
+      }
       if (file.startsWith("core/") && !dependency.startsWith("core/")) {
         violations.push(`${file}: core imports ${fileName}`);
       } else if (!dependency.startsWith("../") && layer(dependency) > layer(file)) {

@@ -1,7 +1,15 @@
 import { Pool, type PoolClient } from "pg";
-import { MAX_ATTEMPTS, RETRY_DELAY_MS, type Job, type Store, type Transaction } from "./core/contracts.js";
+import { MAX_ATTEMPTS, RETRY_DELAY_MS, type Job, type Transaction } from "../core/contracts.js";
+import { postgres as postgresKv } from "../kv/postgres.js";
+import type { StorageAdapter, StorageBackend } from "../storage.js";
 
-export async function createPostgresStore(url: string): Promise<Store & { close(): Promise<void> }> {
+export interface PostgresOptions { url: string }
+
+export function postgres(options: PostgresOptions): StorageAdapter {
+  return () => createPostgresStore(options.url);
+}
+
+async function createPostgresStore(url: string): Promise<StorageBackend> {
   if (!url?.trim()) throw new Error("PostgreSQL storage requires a URL");
   const pool = new Pool({ connectionString: url });
   pool.on("error", (error) => console.error("PostgreSQL connection error", error));
@@ -153,7 +161,41 @@ export async function createPostgresStore(url: string): Promise<Store & { close(
     };
   }
 
+  const kv = await postgresKv()();
   return {
+    bind(db) {
+      return {
+        kv: kv.bind(db),
+        collection: {
+          async insert(name, id, documentJson) {
+            await db.query(
+              "INSERT INTO _simplebase_collections (collection_name, id, data) VALUES ($1, $2::uuid, $3::jsonb)",
+              [name, id, documentJson],
+            );
+          },
+          async get(name, id) {
+            const [row] = await db.query<{ data: string }>(
+              "SELECT data::text AS data FROM _simplebase_collections WHERE collection_name = $1 AND id = $2::uuid",
+              [name, id],
+            );
+            return row?.data;
+          },
+          async update(name, id, patchJson) {
+            const rows = await db.query(
+              "UPDATE _simplebase_collections SET data = data || $3::jsonb WHERE collection_name = $1 AND id = $2::uuid RETURNING id",
+              [name, id, patchJson],
+            );
+            return rows.length > 0;
+          },
+          async delete(name, id) {
+            const rows = await db.query(
+              "DELETE FROM _simplebase_collections WHERE collection_name = $1 AND id = $2::uuid RETURNING id", [name, id],
+            );
+            return rows.length > 0;
+          },
+        },
+      };
+    },
     transaction: (handler) => transaction((client) => handler(createTransaction(client))),
     async bindSubscriptions(bindings) {
       await transaction(async (client) => {

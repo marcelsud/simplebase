@@ -1,5 +1,12 @@
-import { requireName, type Database } from "./core/contracts.js";
+import { requireName } from "./core/contracts.js";
 import { encodePayload } from "./core/payload.js";
+
+export interface CollectionDriver {
+  insert(name: string, id: string, documentJson: string): Promise<void>;
+  get(name: string, id: string): Promise<string | undefined>;
+  update(name: string, id: string, patchJson: string): Promise<boolean>;
+  delete(name: string, id: string): Promise<boolean>;
+}
 
 function encodeDocument(document: Record<string, unknown>): string {
   function validate(value: unknown): void {
@@ -14,48 +21,34 @@ function encodeDocument(document: Record<string, unknown>): string {
   return json;
 }
 
-export function createCollections(db: Database, ensureActive: () => void) {
+export function createCollections(driver: CollectionDriver, ensureActive: () => void) {
   return {
     async insert(name: string, document: Record<string, unknown>): Promise<string> {
       ensureActive();
       requireName(name, "Collection");
       const json = encodeDocument(document);
       const id = crypto.randomUUID();
-      await db.query(
-        "INSERT INTO _simplebase_collections (collection_name, id, data) VALUES ($1, $2::uuid, $3::jsonb)",
-        [name, id, json],
-      );
+      await driver.insert(name, id, json);
       return id;
     },
     async get<T extends object = Record<string, unknown>>(name: string, id: string): Promise<(T & { id: string }) | null> {
       ensureActive();
       requireName(name, "Collection");
       requireName(id, "Document ID");
-      const [row] = await db.query<{ document: T & { id: string } }>(
-        "SELECT data || jsonb_build_object('id', id) AS document FROM _simplebase_collections WHERE collection_name = $1 AND id = $2::uuid",
-        [name, id],
-      );
-      return row?.document ?? null;
+      const json = await driver.get(name, id);
+      return json === undefined ? null : { ...JSON.parse(json), id } as T & { id: string };
     },
     async update(name: string, id: string, patch: Record<string, unknown>): Promise<boolean> {
       ensureActive();
       requireName(name, "Collection");
       requireName(id, "Document ID");
-      const rows = await db.query(
-        "UPDATE _simplebase_collections SET data = data || $3::jsonb WHERE collection_name = $1 AND id = $2::uuid RETURNING id",
-        [name, id, encodeDocument(patch)],
-      );
-      return rows.length > 0;
+      return driver.update(name, id, encodeDocument(patch));
     },
     async delete(name: string, id: string): Promise<boolean> {
       ensureActive();
       requireName(name, "Collection");
       requireName(id, "Document ID");
-      const rows = await db.query(
-        "DELETE FROM _simplebase_collections WHERE collection_name = $1 AND id = $2::uuid RETURNING id",
-        [name, id],
-      );
-      return rows.length > 0;
+      return driver.delete(name, id);
     },
   };
 }

@@ -1,11 +1,9 @@
 import { createSimplebase, Get } from "@marcelsud/simplebase";
+import { postgres as postgresStorage } from "@marcelsud/simplebase/storage/postgres";
 import { bun } from "@marcelsud/simplebase/http/bun";
 
 const app = await createSimplebase({
-  storage: {
-    engine: "postgres",
-    url: process.env.DATABASE_URL ?? "postgresql://simplebase:simplebase@127.0.0.1:55432/simplebase",
-  },
+  storage: postgresStorage({ url: process.env.DATABASE_URL ?? "postgresql://simplebase:simplebase@127.0.0.1:55432/simplebase" }),
   http: bun({ port: Number(process.env.PORT ?? 3000) }),
 });
 

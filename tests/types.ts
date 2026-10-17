@@ -1,4 +1,6 @@
-import { createSimplebase, schema, type Simplebase, type Infer, type StartOptions, type HttpContext, type KvAdapter } from "@marcelsud/simplebase";
+import { createSimplebase, schema, type Simplebase, type Infer, type StartOptions, type HttpContext, type KvAdapter, type StorageAdapter } from "@marcelsud/simplebase";
+import { sqlite } from "@marcelsud/simplebase/storage/sqlite";
+import { postgres as postgresStorage } from "@marcelsud/simplebase/storage/postgres";
 import { redis } from "@marcelsud/simplebase/kv/redis";
 import { postgres } from "@marcelsud/simplebase/kv/postgres";
 
@@ -101,7 +103,7 @@ void checkContract;
 async function checkKv(): Promise<void> {
   const adapters: KvAdapter[] = [postgres(), redis({ url: "redis://localhost:6379" })];
   const runtime = await createSimplebase({
-    storage: { engine: "postgres", url: "" },
+    storage: postgresStorage({ url: "" }),
     kv: { namespaces: {
       settings: {},
       sessions: { schema: schema.object({ userId: schema.string(), locale: schema.string().optional() }) },
@@ -154,8 +156,21 @@ async function checkKv(): Promise<void> {
     await ctx.kv.namespace("sessions").set("id", 123);
   });
   // @ts-expect-error KV is always available; configuration does not accept an enablement flag.
-  await createSimplebase({ storage: { engine: "postgres", url: "" }, kv: true });
+  await createSimplebase({ storage: postgresStorage({ url: "" }), kv: true });
   void [adapters, result];
 }
 
 void checkKv;
+
+function checkStorage(): void {
+  const adapters: StorageAdapter[] = [postgresStorage({ url: "postgresql://localhost/app" }), sqlite({ filename: ":memory:" })];
+  // @ts-expect-error Storage selection uses an adapter factory.
+  void createSimplebase({ storage: { engine: "postgres", url: "" } });
+  // @ts-expect-error SQLite requires an explicit filename.
+  sqlite({});
+  // @ts-expect-error PostgreSQL requires a URL.
+  postgresStorage({ filename: "app.sqlite" });
+  void adapters;
+}
+
+void checkStorage;

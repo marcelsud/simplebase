@@ -1,5 +1,6 @@
 import { Pool, type QueryResultRow } from "pg";
 import { createSimplebase, type Simplebase, type SimplebaseOptions } from "@marcelsud/simplebase";
+import { postgres as postgresStorage } from "@marcelsud/simplebase/storage/postgres";
 import type { KvNamespaces } from "@marcelsud/simplebase";
 
 let databaseUrl: string;
@@ -69,7 +70,7 @@ export async function createFixture(): Promise<Fixture> {
   const fixture: Fixture = {
     url,
     async runtime<Namespaces extends KvNamespaces = {}>(options?: Pick<SimplebaseOptions<Namespaces>, "http" | "kv">) {
-      const runtime = await createSimplebase({ ...options, storage: { engine: "postgres", url } });
+      const runtime = await createSimplebase({ ...options, storage: postgresStorage({ url }) });
       runtimes.push(runtime);
       return runtime;
     },

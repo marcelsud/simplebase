@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { createSimplebase, type Simplebase, type HandlerContext } from "@marcelsud/simplebase";
+import { postgres as postgresStorage } from "@marcelsud/simplebase/storage/postgres";
 import { MAX_ATTEMPTS } from "../src/core/contracts.ts";
 import { cleanupFixtures, createFixture, startDatabase, stopDatabase, waitUntil, type Fixture } from "./database.ts";
 
@@ -327,7 +328,7 @@ test("beforeStop lets an HTTP request invoke its action while the server drains"
 
 test("a failing beforeStop still drains and closes storage", async () => {
   const fixture = await createFixture();
-  const runtime = await createSimplebase({ storage: { engine: "postgres", url: fixture.url } });
+  const runtime = await createSimplebase({ storage: postgresStorage({ url: fixture.url }) });
   const before = [process.listenerCount("SIGINT"), process.listenerCount("SIGTERM")];
   const pid = runtime.action({ args: runtime.schema.object({}), async handler(ctx) {
     return (await ctx.db.query<{ pid: number }>("SELECT pg_backend_pid() AS pid"))[0].pid;
@@ -379,7 +380,7 @@ test("consumer declarations require unique names before start; non-JSON payloads
   expect(() => runtime.worker("late", () => {})).toThrow("before calling start");
   expect(() => runtime.subscription("late", () => {}, { name: "late" })).toThrow("before calling start");
   await starting;
-  await expect(createSimplebase({ storage: { engine: "postgres", url: "" } })).rejects.toThrow("requires a URL");
+  await expect(createSimplebase({ storage: postgresStorage({ url: "" }) })).rejects.toThrow("requires a URL");
 });
 
 test("the combined customer example runs through the package script", async () => {

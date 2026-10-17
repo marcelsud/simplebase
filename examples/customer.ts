@@ -1,10 +1,8 @@
 import { createSimplebase } from "@marcelsud/simplebase";
+import { postgres as postgresStorage } from "@marcelsud/simplebase/storage/postgres";
 
 const simplebase = await createSimplebase({
-  storage: {
-    engine: "postgres",
-    url: process.env.DATABASE_URL ?? "postgresql://simplebase:simplebase@127.0.0.1:55432/simplebase",
-  },
+  storage: postgresStorage({ url: process.env.DATABASE_URL ?? "postgresql://simplebase:simplebase@127.0.0.1:55432/simplebase" }),
 });
 
 const { action, subscription, schema, worker, start, stop } = simplebase;

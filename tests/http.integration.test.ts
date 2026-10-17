@@ -158,6 +158,7 @@ test("compiled decorators, actions and the Node/Hono/Express adapters run in rea
     import { request as nodeRequest } from "node:http";
     import createExpress from "express";
     import { createSimplebase, Get, Post, type HttpContext } from ${JSON.stringify(entrypoint)};
+    import { postgres as postgresStorage } from ${JSON.stringify(new URL("./storage/postgres.js", entrypoint).href)};
     function rawGet(base, path) {
       return new Promise((resolve, reject) => {
         const req = nodeRequest({ hostname: base.hostname, port: base.port, path, agent: false }, res => {
@@ -171,7 +172,7 @@ test("compiled decorators, actions and the Node/Hono/Express adapters run in rea
     }
     for (const name of ["node", "hono", "express"]) {
       const adapter = (await import(${JSON.stringify(adapters)} + name + ".js"))[name];
-      const app = await createSimplebase({ storage: { engine: "postgres", url: process.env.SIMPLEBASE_TEST_PG_URL! } });
+      const app = await createSimplebase({ storage: postgresStorage({ url: process.env.SIMPLEBASE_TEST_PG_URL! }) });
       try {
         const input = app.schema.object({ title: app.schema.string() });
         const insert = app.action({ args: input, async handler(ctx, data) {
