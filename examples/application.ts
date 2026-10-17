@@ -1,4 +1,5 @@
-import { createSimplebase } from "@marcelsud/simplebase";
+import { createSimplebase, Get } from "@marcelsud/simplebase";
+import { bun } from "@marcelsud/simplebase/http/bun";
 
 const app = await createSimplebase({ storage: {
   engine: "postgres",
@@ -24,17 +25,14 @@ const listCustomers = app.action({ args: app.schema.object({}), handler(ctx) {
   return ctx.db.query("SELECT id, email, name, plan, synced_at FROM customers ORDER BY id");
 } });
 
-const server = Bun.serve({
-  port: Number(process.env.PORT ?? 3000),
-  async fetch(request) {
-    if (new URL(request.url).pathname !== "/customers") return new Response("Not found", { status: 404 });
-    if (request.method === "GET") return Response.json(await listCustomers({}));
-    if (request.method !== "POST") return new Response("Method not allowed", { status: 405, headers: { Allow: "GET, POST" } });
-    let customer;
-    try { customer = input.parse(await request.json(), "body"); }
-    catch { return Response.json({ error: "Expected email, name and plan strings" }, { status: 400 }); }
-    return Response.json(await createCustomer(customer), { status: 201 });
-  },
-});
-await app.start({ beforeStop: () => server.stop() });
-console.info(`Application ready at ${server.url}`);
+app.route("GET", "/health", () => ({ ok: true }));
+app.route("POST", "/customers", { action: createCustomer, status: 201 });
+
+class Customers {
+  @Get("/customers")
+  list() { return listCustomers({}); }
+}
+app.controller(new Customers());
+
+await app.start({ http: bun({ port: Number(process.env.PORT ?? 3000) }) });
+console.info(`Application ready at ${app.http!.url}`);

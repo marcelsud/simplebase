@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import { createPostgresStore, encodePayload, POLL_INTERVAL_MS, type SubscriptionBinding } from "./postgres.js";
-import { schema, type Validator } from "./validators.js";
+import { schema, ValidationError, type Validator } from "./validators.js";
+import { createHttpRouter, type HttpAdapter, type HttpHandler, type HttpServer, type HttpMethod } from "./http.js";
 
 export interface HandlerContext {
   db: { query<T = Record<string, unknown>>(sql: string, params?: readonly unknown[]): Promise<T[]> };
@@ -22,6 +23,7 @@ export interface SimplebaseOptions {
 export interface SubscriptionOptions { name: string }
 
 export interface StartOptions {
+  http?: HttpAdapter;
   signals?: boolean;
   beforeStop?: () => void | Promise<void>;
 }
@@ -48,6 +50,11 @@ function encodeDocument(document: Record<string, unknown>): string {
 export async function createSimplebase(options: SimplebaseOptions) {
   if (options.storage.engine !== "postgres") throw new Error("This prototype supports PostgreSQL storage");
   const store = await createPostgresStore(options.storage.url);
+  const router = createHttpRouter();
+  const requests = new Set<Promise<Response>>();
+  let httpServer: HttpServer | undefined;
+  let httpStarting = false;
+  let acceptingRequests = true;
   const subscriptions = new Map<string, Map<string, Handler>>();
   const bindings: SubscriptionBinding[] = [];
   const workers = new Map<string, Handler>();
@@ -75,15 +82,22 @@ export async function createSimplebase(options: SimplebaseOptions) {
   function stop(): Promise<void> {
     if (stopPromise) return stopPromise;
     running = false;
+    acceptingRequests = false;
     wake?.();
     removeSignalHandlers();
-    if (!beforeStop) closing = true;
+    if (!beforeStop && !httpServer && !httpStarting && !requests.size) closing = true;
     stopPromise = Promise.resolve().then(async () => {
       try {
-        await beforeStop?.();
+        await Promise.allSettled(startPromise ? [startPromise] : []);
+        const cleanups = await Promise.allSettled([
+          Promise.resolve().then(() => httpServer?.stop()),
+          Promise.resolve().then(() => beforeStop?.()),
+        ]);
+        await Promise.allSettled([...requests]);
+        const failure = cleanups.find((result) => result.status === "rejected");
+        if (failure?.status === "rejected") throw failure.reason;
       } finally {
         closing = true;
-        await Promise.allSettled(startPromise ? [startPromise] : []);
         await loop;
         await Promise.allSettled([...actions]);
         await store.close();
@@ -232,8 +246,24 @@ export async function createSimplebase(options: SimplebaseOptions) {
     }
   }
 
+  const route: typeof router.route = (method: HttpMethod, path: string, definition: any) => {
+    ensureDeclaring();
+    router.route(method, path, definition);
+  };
+
+  const fetch: HttpHandler = (request, context) => {
+    if (!acceptingRequests) return Promise.resolve(new Response("Service unavailable", { status: 503 }));
+    const pending = router.fetch(request, context);
+    requests.add(pending);
+    return pending.finally(() => requests.delete(pending));
+  };
+
   return {
     schema,
+    route,
+    controller(instance: object): void { ensureDeclaring(); router.controller(instance); },
+    fetch,
+    get http(): HttpServer | undefined { return httpServer; },
     action<Input, Result>(definition: {
       args: Validator<Input>;
       handler: (ctx: HandlerContext, input: Input) => Result | Promise<Result>;
@@ -241,7 +271,9 @@ export async function createSimplebase(options: SimplebaseOptions) {
       ensureOpen();
       return async (input): Promise<Awaited<Result>> => {
         ensureOpen();
-        const parsed = definition.args.parse(input, "args");
+        let parsed: Input;
+        try { parsed = definition.args.parse(input, "args"); }
+        catch (error) { throw new ValidationError(error instanceof Error ? error.message : String(error)); }
         const invocation = invoke((ctx) => definition.handler(ctx, parsed), parsed);
         actions.add(invocation);
         try {
@@ -282,13 +314,21 @@ export async function createSimplebase(options: SimplebaseOptions) {
         if (startOptions.signals !== false) {
           for (const signal of signals) process.once(signal, onSignal);
         }
-        startPromise = store.bindSubscriptions(bindings).then(() => {
+        startPromise = store.bindSubscriptions(bindings).then(async () => {
           ensureOpen();
+          if (stopPromise) throw new Error("Simplebase is stopped");
+          if (startOptions.http) {
+            httpStarting = true;
+            try { httpServer = await startOptions.http(fetch); }
+            finally { httpStarting = false; }
+          }
           if (stopPromise) throw new Error("Simplebase is stopped");
           running = true;
           if (workers.size || bindings.length) loop = workerLoop();
-        }).catch((error) => {
+        }).catch(async (error) => {
           removeSignalHandlers();
+          await httpServer?.stop();
+          httpServer = undefined;
           startPromise = undefined;
           throw error;
         });

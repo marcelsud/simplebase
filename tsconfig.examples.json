@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "allowImportingTsExtensions": false,
+    "declaration": false,
+    "rootDir": "./examples",
+    "outDir": "./examples/.build",
+    "paths": {}
+  },
+  "include": ["examples/http/**/*.ts"]
+}

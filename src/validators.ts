@@ -1,4 +1,8 @@
 // Adapted from Chimpbase's existing validators; see LICENSE and NOTICE.
+export class ValidationError extends Error {
+  override name = "ValidationError";
+}
+
 export interface Validator<T = unknown> {
   readonly isOptional?: true;
   readonly schema: unknown;

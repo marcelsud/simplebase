@@ -1,7 +1,7 @@
 {
   "name": "@marcelsud/simplebase",
-  "version": "0.1.2",
-  "description": "Simple tools for building complex apps with Bun and PostgreSQL.",
+  "version": "0.1.3",
+  "description": "Simple tools for building complex apps with TypeScript and PostgreSQL.",
   "type": "module",
   "license": "MIT",
   "packageManager": "bun@1.3.14",
@@ -11,27 +11,42 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./http/bun": { "types": "./dist/http/bun.d.ts", "import": "./dist/http/bun.js" },
+    "./http/node": { "types": "./dist/http/node.d.ts", "import": "./dist/http/node.js" },
+    "./http/hono": { "types": "./dist/http/hono.d.ts", "import": "./dist/http/hono.js" },
+    "./http/express": { "types": "./dist/http/express.d.ts", "import": "./dist/http/express.js" }
   },
   "files": ["dist", "LICENSE", "NOTICE", "README.md"],
   "publishConfig": { "access": "public" },
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
+    "build:examples": "npm run build && tsc --project tsconfig.examples.json",
     "prepack": "bun run build",
     "test": "bun test --timeout 20000",
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun run test",
     "example": "bun run examples/customer.ts",
     "example:collections": "bun run examples/notes.ts",
+    "example:http:bun": "bun run examples/http/bun.ts",
+    "example:http:node": "npm run build:examples && node examples/.build/http/node.js",
+    "example:http:hono": "npm run build:examples && node examples/.build/http/hono.js",
+    "example:http:express": "npm run build:examples && node examples/.build/http/express.js",
     "db:up": "docker compose up -d --wait",
     "db:down": "docker compose down"
   },
   "dependencies": {
     "pg": "8.16.3"
   },
+  "engines": { "node": ">=20" },
+  "peerDependencies": { "express": "^5.3.0", "hono": "^4.13.13" },
+  "peerDependenciesMeta": { "express": { "optional": true }, "hono": { "optional": true } },
   "devDependencies": {
+    "@types/express": "5.0.6",
     "@types/pg": "8.15.6",
     "bun-types": "1.3.14",
+    "express": "5.3.0",
+    "hono": "4.13.13",
     "typescript": "5.9.3"
   },
   "repository": {

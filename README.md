@@ -11,14 +11,17 @@ Start with a function. Add SQL, events, and background work as you need them.
 - **Collections** store flexible JSON documents by ID.
 - **Events** let different features react to the same change.
 - **Jobs** move work into the background and survive restarts.
+- **HTTP routes** expose handlers and actions through Bun, Node, Hono, or Express.
 
-Simplebase runs on Bun and PostgreSQL.
+Simplebase runs on Bun or Node.js 20+ with PostgreSQL.
 
 ## Get started
 
 ```bash
 bun add @marcelsud/simplebase
 ```
+
+You can also install it with `npm install @marcelsud/simplebase`. Node applications use ES modules; compile TypeScript with `tsc` before running the generated JavaScript.
 
 Add your PostgreSQL URL to `.env`:
 
@@ -136,6 +139,152 @@ After starting PostgreSQL, run the note example:
 bun run example:collections
 ```
 
+## HTTP routes
+
+Declare routes before `start()`. A function is shorthand for `{ handler }`:
+
+```ts
+app.route("GET", "/health", () => Response.json({ ok: true }));
+
+app.route("POST", "/preview", {
+  body: app.schema.object({ name: app.schema.string() }),
+  handler: ({ body }) => ({ greeting: `Hello, ${body.name}` }),
+});
+```
+
+Handlers receive `request` (the standard `Request`), `params`, `query`, `body`, and optional `native` context. Routes support literal paths and `:parameters`; literal segments take precedence. A trailing slash is optional. `params` contains decoded strings, and repeated query keys produce arrays. Optional `body`, `params`, and `query` schemas validate those values and infer the handler's TypeScript types. Query strings are not automatically converted to numbers or booleans.
+
+Bind an existing action with optional asynchronous transformations:
+
+```ts
+app.route("POST", "/notes", {
+  body: app.schema.object({ text: app.schema.string() }),
+  action: createNote,
+  input: ({ body }) => ({ body: body.text }),
+  output: (id) => ({ data: { id } }),
+  status: 201,
+});
+```
+
+Each route selects exactly one `handler` or `action`. Without `input`, an action receives the JSON body, or `{}` when there is no body. Without `output`, its result becomes JSON. Both transformations can return promises; `output` receives the result and HTTP context. Handlers can also use `output`.
+
+Actions keep their own validation and transactions. `input` runs before action validation; `output` runs after the action commits. An output failure returns `500` and does not undo a committed action. HTTP adds no enclosing transaction and does not retry actions.
+
+Return a `Response` to control the entire response, including status, headers, cookies, and streaming. JSON values use the route's `status`, defaulting to `200`; an undefined result produces an empty response, defaulting to `204`. Raw handlers can read text, form data, or streams directly through `request`. The core reads JSON only when a body schema or the default action input needs it. When a body schema is declared, use the already parsed `body` instead of reading `request` again.
+
+Missing paths return `404`; unsupported methods return `405` with `Allow`. `HEAD` falls back to `GET` with no response body, and `OPTIONS` returns the allowed methods unless explicitly registered. Invalid JSON and input validation failures return `400`; unexpected errors return a generic `500` and are logged server-side. Throw the exported `ValidationError` for an invalid custom input mapping.
+
+### Decorators
+
+Decorators register the same routes and preserve the controller instance's `this`:
+
+```ts
+import { Get, Post, type HttpContext, type Infer } from "@marcelsud/simplebase";
+
+const noteInput = app.schema.object({ body: app.schema.string() });
+
+class Notes {
+  @Get("/health")
+  health() { return { ok: true }; }
+
+  @Post("/notes", { body: noteInput, status: 201 })
+  create({ body }: HttpContext<Infer<typeof noteInput>>) {
+    return createNote(body);
+  }
+}
+
+app.controller(new Notes());
+```
+
+`@Get`, `@Post`, `@Put`, `@Patch`, `@Delete`, `@Head`, and `@Options` accept the path and handler options. Use standard TypeScript decorators (TypeScript 5+, without `experimentalDecorators` or `emitDecoratorMetadata`). Bun can run the TypeScript directly; Node runs the JavaScript emitted by `tsc`. Decorators do not infer a method parameter's type: annotate it with `HttpContext<Infer<typeof bodySchema>>` when validating a body. Public inherited methods are supported; overriding a method replaces its inherited registrations. Controllers are registered explicitly, without dependency injection or automatic scanning.
+
+### Adapters
+
+Choose the adapter at startup:
+
+```ts
+import { node } from "@marcelsud/simplebase/http/node";
+
+await app.start({ http: node({ port: 3000 }) });
+console.info(app.http!.url);
+```
+
+| Adapter | Import | Runtime |
+| --- | --- | --- |
+| `bun()` | `@marcelsud/simplebase/http/bun` | Bun |
+| `node()` | `@marcelsud/simplebase/http/node` | Node or Bun |
+| `hono()` | `@marcelsud/simplebase/http/hono` | Node or Bun, using the Node HTTP transport |
+| `express()` | `@marcelsud/simplebase/http/express` | Node or Bun, using the Node HTTP transport |
+
+All adapters accept `port` and `hostname` (defaults: `3000` and `127.0.0.1`). Port `0` selects an available port, reported through `app.http.url`. The Bun adapter requires Bun's TypeScript types in a TypeScript project. Hono and Express are optional peer dependencies: install `hono` or `express` when choosing their adapter, and `@types/express` for Express TypeScript applications. Bun and Node adapters need neither framework.
+
+Supply an existing framework application to use its middleware and routes before the Simplebase routes:
+
+```ts
+import { Hono } from "hono";
+import { hono, getHonoContext } from "@marcelsud/simplebase/http/hono";
+
+const api = new Hono();
+api.use("*", async (context, next) => {
+  await next();
+  context.header("X-Service", "notes");
+});
+
+app.route("GET", "/method", (http) => ({
+  method: getHonoContext(http)?.req.method ?? http.request.method,
+}));
+
+await app.start({ http: hono({ app: api, port: 3000 }) });
+```
+
+Express accepts the same `{ app, port, hostname }` options. `getExpressContext(http)` returns `{ req, res }`; `getNodeContext(http)` returns the native Node request and response; `getBunContext(http)` returns `{ server }`. Each helper returns `undefined` when another adapter is in use. Native access opts that route into the chosen framework; return the final response from the handler rather than sending it through the native response object.
+
+Middleware before Simplebase routes should leave the request body unread. The core owns JSON parsing and validation; do not put `express.json()` before the Simplebase bridge. Existing framework routes can use their own parsers. Native framework paths remain available alongside Simplebase paths.
+
+`app.fetch(request)` also works without a server. For an application-owned server, mount `toHono(app.fetch)` or `toExpress(app.fetch)` from the respective adapter module, then call `app.start()` without `http`. The host application owns server shutdown and can drain it with `beforeStop`.
+
+An adapter is an asynchronous function that receives `app.fetch` and returns `{ url, stop }`. It can pass native context as the second argument to `fetch`. New adapters reuse the same route dispatcher, validation, transformations, and error handling.
+
+With `start({ http })`, `stop()` closes the listener, drains HTTP requests and actions, and then closes PostgreSQL. Signal handling and `signals: false` work with every adapter. A failed startup removes its signal handlers and allows retry. Without `http`, the runtime continues to support processes dedicated to workers and subscriptions.
+
+### HTTP examples
+
+The runnable examples in [examples/http](examples/http) share a [notes application](examples/http/app.ts) and select the adapter in separate entrypoints. Start PostgreSQL with `docker compose up -d --wait`, then run one example:
+
+| Entrypoint | Command | Runtime |
+| --- | --- | --- |
+| [bun.ts](examples/http/bun.ts) | `bun run example:http:bun` | Bun |
+| [node.ts](examples/http/node.ts) | `npm run example:http:node` | Node |
+| [hono.ts](examples/http/hono.ts) | `npm run example:http:hono` | Node with Hono |
+| [express.ts](examples/http/express.ts) | `npm run example:http:express` | Node with Express |
+
+The Node commands compile the library and examples with `tsc`, including decorators, before starting the server. You can also run the Hono and Express TypeScript entrypoints directly with Bun. Set `DATABASE_URL` to use another PostgreSQL database or `PORT` to choose another port; defaults match the local Docker setup and port `3000`. Press Ctrl+C to drain and stop the application.
+
+| Route | Demonstrates |
+| --- | --- |
+| `GET /health` | A direct handler returning a `Response` |
+| `POST /preview` | A declarative handler validating `{ "body": "text" }` |
+| `POST /notes` | An action binding transforming `{ "text": "text" }`, with a response envelope and `Location` header |
+| `POST /notes/decorated` | `@Post` with a validated `{ "body": "text" }` input |
+| `GET /notes/:id` | `@Get`, typed path parameters, and a collection read |
+| `GET /context` | The selected adapter's native context |
+| `GET /framework` | An existing framework route, in Hono and Express |
+
+Try the same requests with any adapter:
+
+```bash
+curl http://localhost:3000/health
+curl http://localhost:3000/preview \
+  -H 'Content-Type: application/json' -d '{"body":"  First note  "}'
+curl -i http://localhost:3000/notes \
+  -H 'Content-Type: application/json' -d '{"text":"  First note  "}'
+curl http://localhost:3000/notes/decorated \
+  -H 'Content-Type: application/json' -d '{"body":"Created through a decorator"}'
+curl http://localhost:3000/context
+```
+
+Follow the URL in the `Location` header to retrieve a created note. The Hono and Express examples also add an `X-Request-ID` header in middleware and expose that same ID through `/context`.
+
 ## Run separate processes
 
 Use the same `DATABASE_URL` and application schema for every process. These are application replicas connecting to one writable PostgreSQL database.
@@ -163,7 +312,7 @@ curl http://localhost:3000/customers \
 curl http://localhost:3000/customers
 ```
 
-The application commits the customer and a subscription delivery. The subscription enqueues a job; the worker updates `synced_at`. HTTP routes belong to the application. Simplebase consumes only destinations with handlers loaded in that process.
+The application commits the customer and a subscription delivery. The subscription enqueues a job; the worker updates `synced_at`. Simplebase consumes only destinations with handlers loaded in that process.
 
 After verifying the three-process flow, run additional copies of the subscription and worker commands to share their work. Additional application replicas need different ports, for example `PORT=3001 bun run examples/application.ts`.
 

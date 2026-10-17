@@ -1,4 +1,4 @@
-import type { Simplebase, Infer, StartOptions } from "@marcelsud/simplebase";
+import type { Simplebase, Infer, StartOptions, HttpContext } from "@marcelsud/simplebase";
 
 function checkContract(runtime: Simplebase): void {
   const { action, subscription, worker, schema, start, stop } = runtime;
@@ -42,6 +42,37 @@ function checkContract(runtime: Simplebase): void {
     },
   });
   const result: Promise<{ id: number }> = createCustomer(input);
+  runtime.route("POST", "/customers", {
+    body: schema.object({ data: customer }),
+    action: createCustomer,
+    input: ({ body }) => body.data,
+    output: (created, context) => {
+      const id: number = created.id;
+      const email: string = context.body.data.email;
+      // @ts-expect-error Action results retain their inferred type in output.
+      const invalid: string = created.id;
+      return { id, email, invalid };
+    },
+    status: 201,
+  });
+  runtime.route("POST", "/preview", {
+    body: customer,
+    params: schema.object({ id: schema.string() }),
+    query: schema.object({ mode: schema.string() }),
+    handler: ({ body, params, query }) => {
+      const email: string = body.email;
+      const id: string = params.id;
+      const mode: string = query.mode;
+      // @ts-expect-error HTTP schemas determine the handler input types.
+      const invalid: number = body.email;
+      return { email, id, mode, invalid };
+    },
+  });
+  // @ts-expect-error An input mapping must satisfy the bound action's input.
+  runtime.route("POST", "/wrong-input", { action: createCustomer, input: () => ({ email: 123 }) });
+  // @ts-expect-error A route cannot select both handler and action.
+  runtime.route("POST", "/ambiguous", { handler: () => null, action: createCustomer });
+  runtime.route("GET", "/raw", async (http: HttpContext) => new Response(await http.request.text()));
   // @ts-expect-error Action inputs are inferred from the validator.
   createCustomer({ email: 1, name: "Sam", plan: "starter" });
   subscription("customer.created", async (ctx, event) => {
