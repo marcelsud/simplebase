@@ -1,4 +1,6 @@
-import type { Simplebase, Infer, StartOptions, HttpContext } from "@marcelsud/simplebase";
+import { createSimplebase, schema, type Simplebase, type Infer, type StartOptions, type HttpContext, type KvAdapter } from "@marcelsud/simplebase";
+import { redis } from "@marcelsud/simplebase/kv/redis";
+import { postgres } from "@marcelsud/simplebase/kv/postgres";
 
 function checkContract(runtime: Simplebase): void {
   const { action, subscription, worker, schema, start, stop } = runtime;
@@ -95,3 +97,65 @@ function checkContract(runtime: Simplebase): void {
 }
 
 void checkContract;
+
+async function checkKv(): Promise<void> {
+  const adapters: KvAdapter[] = [postgres(), redis({ url: "redis://localhost:6379" })];
+  const runtime = await createSimplebase({
+    storage: { engine: "postgres", url: "" },
+    kv: { namespaces: {
+      settings: {},
+      sessions: { schema: schema.object({ userId: schema.string(), locale: schema.string().optional() }) },
+      nullable: { schema: schema.string().nullable() },
+    } },
+  });
+  const action = runtime.action({ args: schema.object({}), async handler(ctx) {
+    const raw: unknown = await ctx.kv.get("raw");
+    const asserted: string | undefined = await ctx.kv.get<string>("raw");
+    await ctx.kv.set("raw", { anything: true });
+    const settings = ctx.kv.namespace("settings");
+    const theme: string | undefined = await settings.get<string>("theme");
+    await settings.set("theme", "dark");
+    const sessions = ctx.kv.namespace("sessions");
+    await sessions.set("id", { userId: "user-1" });
+    const session = await sessions.get("id");
+    if (session) {
+      const userId: string = session.userId;
+      const locale: string | undefined = session.locale;
+      // @ts-expect-error Bootstrap namespace schemas determine their value types.
+      const wrong: number = session.userId;
+      void [userId, locale, wrong];
+    }
+    // @ts-expect-error A registered namespace cannot bypass its schema using get<T>.
+    await sessions.get<number>("id");
+    // @ts-expect-error The namespace requires a string userId.
+    await sessions.set("id", { userId: 123 });
+    // @ts-expect-error Required fields cannot be omitted.
+    await sessions.set("id", {});
+    // @ts-expect-error A locally supplied schema cannot replace a registered schema.
+    ctx.kv.namespace("sessions", schema.string());
+    const local = ctx.kv.namespace("local", schema.integer());
+    const count: number | undefined = await local.get("count");
+    await local.set("count", 1);
+    // @ts-expect-error Local schemas also infer and check write types.
+    await local.set("count", "1");
+    const nullable: string | null | undefined = await ctx.kv.namespace("nullable").get("key");
+    const deleted: boolean = await sessions.delete("id");
+    void [raw, asserted, theme, count, nullable, deleted];
+    return session;
+  } });
+  const result: { userId: string; locale?: string } | undefined = await action({});
+  runtime.subscription("typed", async (ctx) => {
+    const session = await ctx.kv.namespace("sessions").get("id");
+    const userId: string | undefined = session?.userId;
+    void userId;
+  }, { name: "typed" });
+  runtime.worker("typed", async (ctx) => {
+    // @ts-expect-error Workers retain the bootstrap namespace types.
+    await ctx.kv.namespace("sessions").set("id", 123);
+  });
+  // @ts-expect-error KV is always available; configuration does not accept an enablement flag.
+  await createSimplebase({ storage: { engine: "postgres", url: "" }, kv: true });
+  void [adapters, result];
+}
+
+void checkKv;

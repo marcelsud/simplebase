@@ -1,5 +1,6 @@
 import { Pool, type QueryResultRow } from "pg";
 import { createSimplebase, type Simplebase, type SimplebaseOptions } from "@marcelsud/simplebase";
+import type { KvNamespaces } from "@marcelsud/simplebase";
 
 let databaseUrl: string;
 let admin: Pool;
@@ -52,7 +53,7 @@ export async function cleanupFixtures(): Promise<void> {
 
 export interface Fixture {
   url: string;
-  runtime(options?: Pick<SimplebaseOptions, "http">): Promise<Simplebase>;
+  runtime<Namespaces extends KvNamespaces = {}>(options?: Pick<SimplebaseOptions<Namespaces>, "http" | "kv">): Promise<Simplebase<Namespaces>>;
   rows<T extends QueryResultRow = QueryResultRow>(sql: string, params?: unknown[]): Promise<T[]>;
   close(): Promise<void>;
 }
@@ -64,10 +65,10 @@ export async function createFixture(): Promise<Fixture> {
   scopedUrl.searchParams.set("options", (scopedUrl.searchParams.get("options") ?? "") + ` -csearch_path=${schema}`);
   const url = scopedUrl.toString();
   const pool = new Pool({ connectionString: url });
-  const runtimes: Simplebase[] = [];
+  const runtimes: { stop(): Promise<void> }[] = [];
   const fixture: Fixture = {
     url,
-    async runtime(options) {
+    async runtime<Namespaces extends KvNamespaces = {}>(options?: Pick<SimplebaseOptions<Namespaces>, "http" | "kv">) {
       const runtime = await createSimplebase({ ...options, storage: { engine: "postgres", url } });
       runtimes.push(runtime);
       return runtime;

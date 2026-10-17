@@ -31,6 +31,10 @@ test("the npm tarball installs, imports, and typechecks in an independent applic
       expect(paths).toContain(`dist/http/${adapter}.js`);
       expect(paths).toContain(`dist/http/${adapter}.d.ts`);
     }
+    for (const adapter of ["postgres", "redis"]) {
+      expect(paths).toContain(`dist/kv/${adapter}.js`);
+      expect(paths).toContain(`dist/kv/${adapter}.d.ts`);
+    }
     expect(paths).toContain("README.md");
     expect(paths.every((path) => path.startsWith("dist/") || ["package.json", "README.md", "LICENSE", "NOTICE"].includes(path))).toBe(true);
 
@@ -48,8 +52,9 @@ test("the npm tarball installs, imports, and typechecks in an independent applic
     expect(manifest.version).toBe(project.version);
 
     await writeFile(join(consumer, "main.ts"), `
-import { createSimplebase, Get, type Simplebase, type HandlerContext, type StartOptions, type HttpContext } from ${JSON.stringify(project.name)};
+import { createSimplebase, schema, Get, type Simplebase, type HandlerContext, type StartOptions, type HttpContext } from ${JSON.stringify(project.name)};
 import { node } from ${JSON.stringify(project.name + "/http/node")};
+import { postgres } from ${JSON.stringify(project.name + "/kv/postgres")};
 
 class Controller {
   @Get("/health")
@@ -57,6 +62,25 @@ class Controller {
 }
 
 async function check(): Promise<void> {
+  const configured = await createSimplebase({
+    storage: { engine: "postgres", url: "" },
+    kv: {
+      adapter: postgres(),
+      namespaces: { sessions: { schema: schema.object({ userId: schema.string() }) } },
+    },
+  });
+  configured.action({ args: schema.object({}), async handler(ctx) {
+    await ctx.kv.set("raw", null);
+    const sessions = ctx.kv.namespace("sessions");
+    await sessions.set("id", { userId: "user-1" });
+    const session = await sessions.get("id");
+    const id: string | undefined = session?.userId;
+    // @ts-expect-error Published namespace declarations preserve schema inference.
+    await sessions.set("id", { userId: 123 });
+    // @ts-expect-error Registered schema inference cannot be overridden on reads.
+    await sessions.get<number>("id");
+    return id;
+  } });
   const runtime: Simplebase = await createSimplebase({
     storage: { engine: "postgres", url: "" },
     http: node({ port: 0 }),
@@ -129,20 +153,21 @@ void check;
         if ((await response.json()).method !== "GET") throw new Error("Published Node adapter failed");
         console.log("Published Node adapter works");
       } finally { await server.stop(); }
-      for (const framework of ["hono", "express"]) {
+      for (const framework of ["hono", "express", "redis"]) {
         try { await import(framework); throw new Error("Optional framework installed unexpectedly"); }
         catch (error) { if (error.code !== "ERR_MODULE_NOT_FOUND") throw error; }
       }
     `], consumer);
     expect(imported).toContain("Published entrypoint works");
     expect(imported).toContain("Published Node adapter works");
-    for (const dependency of ["hono", "express", "@types/express", "bun-types"]) {
+    for (const dependency of ["hono", "express", "redis", "@types/express", "bun-types"]) {
       consumerManifest.devDependencies[dependency] = project.devDependencies[dependency];
     }
     await writeFile(join(consumer, "package.json"), JSON.stringify(consumerManifest));
     await run([process.execPath, "install", "--ignore-scripts"], consumer);
     await writeFile(join(consumer, "adapters.ts"), `
-import { type HttpAdapter, type HttpContext } from ${JSON.stringify(project.name)};
+import { type HttpAdapter, type HttpContext, type KvAdapter } from ${JSON.stringify(project.name)};
+import { redis } from ${JSON.stringify(project.name + "/kv/redis")};
 import { bun, getBunContext } from ${JSON.stringify(project.name + "/http/bun")};
 import { node, getNodeContext } from ${JSON.stringify(project.name + "/http/node")};
 import { hono, getHonoContext, toHono } from ${JSON.stringify(project.name + "/http/hono")};
@@ -150,6 +175,7 @@ import { express, getExpressContext, toExpress } from ${JSON.stringify(project.n
 import { Hono } from "hono";
 import makeExpress from "express";
 const adapters: HttpAdapter[] = [bun(), node(), hono({ app: new Hono() }), express({ app: makeExpress() })];
+const kvAdapter: KvAdapter = redis({ url: "redis://localhost:6379", prefix: "app:" });
 function checkNative(http: HttpContext) {
   const bunPort: number | undefined = getBunContext(http)?.server.port;
   const nodeUrl: string | undefined = getNodeContext(http)?.req.url;
@@ -157,7 +183,7 @@ function checkNative(http: HttpContext) {
   const expressMethod: string | undefined = getExpressContext(http)?.req.method;
   void [bunPort, nodeUrl, honoMethod, expressMethod];
 }
-void [adapters, checkNative, toHono, toExpress];
+void [adapters, kvAdapter, checkNative, toHono, toExpress];
 `);
     await run([
       join(root, "node_modules/.bin/tsc"), "--noEmit", "--strict", "--target", "ES2022",

@@ -74,6 +74,12 @@ export async function createPostgresStore(url: string): Promise<Store & { close(
         data JSONB NOT NULL CHECK (jsonb_typeof(data) = 'object' AND NOT (data ? 'id')),
         PRIMARY KEY (collection_name, id)
       )`);
+      await client.query(`CREATE TABLE IF NOT EXISTS _simplebase_kv (
+        namespace TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value JSONB NOT NULL,
+        PRIMARY KEY (namespace, key)
+      )`);
       await client.query(`
         CREATE INDEX IF NOT EXISTS idx_simplebase_queue_jobs_pending_due
         ON _simplebase_queue_jobs(available_at_ms, id) WHERE status = 'pending'

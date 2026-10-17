@@ -2,7 +2,7 @@
 
 **Build complex apps with simple tools.**
 
-Validated TypeScript actions, SQL, JSON collections, durable events, background jobs, and HTTP routes, backed by PostgreSQL.
+Validated TypeScript actions, SQL, JSON collections, key-value storage, durable events, background jobs, and HTTP routes, backed by PostgreSQL.
 
 Runs on Bun or Node.js 20+. Simplebase is an early prototype; its API may change.
 
@@ -74,11 +74,67 @@ Actions, subscriptions, and workers receive the same context:
 | --- | --- |
 | `ctx.db.query(sql, params)` | Execute parameterized SQL against your application tables. |
 | `ctx.collection` | Store JSON documents by collection name and UUID. |
+| `ctx.kv` | Store JSON values by key, with optional namespaces and schemas. |
 | `ctx.pubsub.publish(topic, payload)` | Publish an event to named subscriptions. |
 | `ctx.queue.enqueue(queue, payload)` | Save a job for a worker. |
 | `ctx.log.info(message, fields)` | Write a log message. |
 
 Collections need no setup. `insert(name, data)` returns a UUID; `get<T>(name, id)` returns the document with its `id`, or `null`. `update(name, id, patch)` replaces supplied top-level fields; `delete(name, id)` removes the document. Both return whether the document existed. Documents and patches must be JSON objects without a supplied `id`.
+
+## Key-value storage
+
+KV is always available and uses the application's PostgreSQL database by default. Within a handler:
+
+```ts
+await ctx.kv.set("theme", "dark");
+const theme = await ctx.kv.get<string>("theme");
+const removed = await ctx.kv.delete("theme");
+
+const settings = ctx.kv.namespace("settings");
+await settings.set("theme", "light");
+```
+
+`set` inserts or replaces the complete value. `get` returns `undefined` for missing keys, preserving stored JSON `null`; `delete` returns whether the key existed. Keys and namespace names must be nonempty strings. Raw KV has its own scope, separate from named namespaces. Without a schema, `get<T>` provides a TypeScript assertion without runtime shape validation.
+
+Declare namespaces centrally to infer their types and validate reads and writes:
+
+```ts
+import { createSimplebase, schema } from "@marcelsud/simplebase";
+
+const app = await createSimplebase({
+  storage: { engine: "postgres", url: process.env.DATABASE_URL! },
+  kv: {
+    namespaces: {
+      settings: {},
+      sessions: {
+        schema: schema.object({
+          userId: schema.string(),
+          locale: schema.string().optional(),
+        }),
+      },
+    },
+  },
+});
+```
+
+In this app's handlers, `ctx.kv.namespace("sessions").get(key)` returns `{ userId: string; locale?: string } | undefined`. Invalid values throw `ValidationError`. Existing values are validated when read; schema changes do not migrate them. Bootstrap schemas apply to all handles of that namespace and cannot be replaced locally. Undeclared namespaces remain available, and can optionally supply a local schema with `ctx.kv.namespace("counts", app.schema.integer())`. All values, including schema outputs, must be JSON serializable. KV handles expire with their handler context.
+
+To use Redis, install its optional client with `bun add redis` or `npm install redis`, then provide an adapter:
+
+```ts
+import { redis } from "@marcelsud/simplebase/kv/redis";
+
+const app = await createSimplebase({
+  storage: { engine: "postgres", url: process.env.DATABASE_URL! },
+  kv: {
+    adapter: redis({ url: process.env.REDIS_URL!, prefix: "my-app:kv:" }),
+  },
+});
+```
+
+Namespaces and schemas work with either backend. Redis connects during `createSimplebase`, so actions can use it before `start()`, and disconnects after handlers drain during `stop()`. Its default key prefix is `simplebase:kv:`; use a separate prefix for applications sharing a Redis database, and the same prefix across an application's processes. PostgreSQL is still required for SQL, collections, events, and jobs.
+
+Redis writes take effect independently of the PostgreSQL transaction: a handler failure does not roll them back, and retries can repeat them. The default PostgreSQL KV adapter shares the handler transaction. Explicit PostgreSQL selection is available as `postgres()` from `@marcelsud/simplebase/kv/postgres`. Custom adapter factories implement the exported `KvAdapter` contract: return a backend with `bind(db)` and optional `stop()`. Its driver receives `(namespace, key)` and stores JSON strings through `get`, `set`, and `delete`; `get` returns `undefined` for missing keys. KV handles namespace schemas and JSON encoding independently of the adapter.
 
 ## HTTP
 
@@ -101,7 +157,7 @@ See the [HTTP examples](examples/http) for controllers, decorators, validation, 
 
 ## Transactions and delivery
 
-- A handler's SQL writes, documents, enqueued jobs, and event deliveries commit or roll back together.
+- A handler's SQL writes, documents, default PostgreSQL KV writes, enqueued jobs, and event deliveries commit or roll back together. External KV adapters such as Redis have independent persistence semantics.
 - Nested actions on the same app share the transaction. Await them; a nested failure aborts the transaction even if caught.
 - Subscriptions run after the publisher commits. Subscription and worker failures roll back their changes and retry, up to five attempts with a one-second delay.
 - Jobs survive restarts. External effects can repeat, and delivery order is not guaranteed; make external operations idempotent.

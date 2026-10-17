@@ -52,7 +52,7 @@ test("root import, destructured factories, and actions before and after start", 
   expect((await fixture.rows("SELECT sync_count FROM customers WHERE id = $1", [before.id]))[0].sync_count).toBe(0);
   expect((await fixture.rows("SELECT email FROM customers WHERE id = $1", [after.id]))[0].email).toBe("O'Reilly'); DROP TABLE customers;--");
   expect((await fixture.rows("SELECT status FROM _simplebase_queue_jobs")).every((job) => job.status === "completed")).toBe(true);
-  expect((await fixture.rows("SELECT COUNT(*)::int AS count FROM information_schema.tables WHERE table_schema = current_schema() AND table_name LIKE '_simplebase_%'"))[0].count).toBe(3);
+  expect((await fixture.rows("SELECT COUNT(*)::int AS count FROM information_schema.tables WHERE table_schema = current_schema() AND table_name LIKE '_simplebase_%'"))[0].count).toBe(4);
   await Promise.all([stop(), stop()]);
 });
 

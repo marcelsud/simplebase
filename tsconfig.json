@@ -10,7 +10,8 @@
     "types": ["bun-types"],
     "paths": {
       "@marcelsud/simplebase": ["./src/index.ts"],
-      "@marcelsud/simplebase/http/*": ["./src/http/*.ts"]
+      "@marcelsud/simplebase/http/*": ["./src/http/*.ts"],
+      "@marcelsud/simplebase/kv/*": ["./src/kv/*.ts"]
     }
   },
   "include": ["src/**/*.ts", "examples/**/*.ts", "tests/**/*.ts"]

@@ -3,17 +3,21 @@ import { createPostgresStore } from "./postgres.js";
 import { schema, type Validator } from "./validators.js";
 import { createHttpRouter, type HttpAdapter, type HttpHandler, type HttpServer, type HttpMethod } from "./http.js";
 import { createCollections, type Collections } from "./collections.js";
+import { createKv, type Kv, type KvBackend, type KvNamespaces, type KvOptions } from "./kv.js";
+import { postgres } from "./kv/postgres.js";
 import { createRuntime } from "./core/runtime.js";
 import type { CoreContext, ExecutionState } from "./core/contracts.js";
 export type { SubscriptionOptions } from "./core/contracts.js";
 
-export interface HandlerContext extends CoreContext {
+export interface HandlerContext<Namespaces extends KvNamespaces = {}> extends CoreContext {
   collection: Collections;
+  kv: Kv<Namespaces>;
 }
 
-export interface SimplebaseOptions {
+export interface SimplebaseOptions<Namespaces extends KvNamespaces = {}> {
   storage: { engine: "postgres"; url: string };
   http?: HttpAdapter;
+  kv?: KvOptions<Namespaces>;
 }
 
 export interface StartOptions {
@@ -22,12 +26,19 @@ export interface StartOptions {
   beforeStop?: () => void | Promise<void>;
 }
 
-export async function createSimplebase(options: SimplebaseOptions) {
+export async function createSimplebase<Namespaces extends KvNamespaces = {}>(options: SimplebaseOptions<Namespaces>) {
   if (options.storage.engine !== "postgres") throw new Error("This prototype supports PostgreSQL storage");
+  const kv = createKv(options.kv?.namespaces);
   const store = await createPostgresStore(options.storage.url);
-  const executions = new AsyncLocalStorage<ExecutionState<HandlerContext>>();
-  const runtime = createRuntime<HandlerContext>(store,
-    (ctx, ensureActive) => ({ ...ctx, collection: createCollections(ctx.db, ensureActive) }),
+  let kvBackend: KvBackend;
+  try { kvBackend = await (options.kv?.adapter ?? postgres())(); }
+  catch (error) { await store.close(); throw error; }
+  const executions = new AsyncLocalStorage<ExecutionState<HandlerContext<Namespaces>>>();
+  const runtime = createRuntime<HandlerContext<Namespaces>>(store,
+    (ctx, ensureActive) => ({
+      ...ctx, collection: createCollections(ctx.db, ensureActive),
+      kv: kv(kvBackend.bind(ctx.db), ensureActive),
+    }),
     {
       info: (message, fields) => console.info(message, fields ?? {}),
       error: (message, fields) => console.error(message, fields),
@@ -77,7 +88,8 @@ export async function createSimplebase(options: SimplebaseOptions) {
       } finally {
         runtime.closeActions();
         await runtime.drain();
-        await store.close();
+        try { await kvBackend.stop?.(); }
+        finally { await store.close(); }
       }
     });
     return stopPromise;
@@ -103,7 +115,7 @@ export async function createSimplebase(options: SimplebaseOptions) {
     get http(): HttpServer | undefined { return httpServer; },
     action<Input, Result>(definition: {
       args: Validator<Input>;
-      handler: (ctx: HandlerContext, input: Input) => Result | Promise<Result>;
+      handler: (ctx: HandlerContext<Namespaces>, input: Input) => Result | Promise<Result>;
     }): (input: Input) => Promise<Awaited<Result>> {
       return runtime.action(definition);
     },
@@ -146,4 +158,4 @@ export async function createSimplebase(options: SimplebaseOptions) {
   };
 }
 
-export type Simplebase = Awaited<ReturnType<typeof createSimplebase>>;
+export type Simplebase<Namespaces extends KvNamespaces = {}> = Awaited<ReturnType<typeof createSimplebase<Namespaces>>>;
